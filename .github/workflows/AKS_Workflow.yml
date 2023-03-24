@@ -30,7 +30,5 @@ jobs:
              resource-group: 'poc-helloworld'
              cluster-name: 'poc-helloworld'    
 
-        - name: 'test AKS'
-          run: |
-            kubectl get pods     
+ 
 
