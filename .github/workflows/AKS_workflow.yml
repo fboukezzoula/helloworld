@@ -48,6 +48,7 @@ jobs:
           version=$(cat ./version) 
           echo "$(($version+1))" > ./version 
           git config user.email "f.boukezzoula@gmail.com" 
+          git config user.name "BOUKEZZOULA Fouzi"
           git commit -m "release version $(cat ./version)"
           git tag $(cat ./version) && git push https://fboukezoula:$MYPAT@github.com/fboukezzoula/helloworld.git --tags
     
