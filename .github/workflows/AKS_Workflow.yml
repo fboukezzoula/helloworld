@@ -1,4 +1,4 @@
-on: [push]
+on: [workflow_dispatch]
 name: AKS_Workflow
 
 jobs:
@@ -23,4 +23,10 @@ jobs:
         - run: |
             docker build . -t ${{ secrets.REGISTRY_LOGIN_SERVER }}/poc-helloworld:${{ github.sha }}
             docker push ${{ secrets.REGISTRY_LOGIN_SERVER }}/poc-helloworld:${{ github.sha }}
+
+        - name: 'AKS set context'
+        - uses: azure/aks-set-context@v3
+          with:
+             resource-group: 'poc-helloworld'
+             cluster-name: 'poc-helloworld'            
 
