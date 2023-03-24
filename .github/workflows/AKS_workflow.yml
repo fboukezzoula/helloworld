@@ -45,7 +45,7 @@ jobs:
       - name: Increment version and push
         run: |
           cd $GITHUB_WORKSPACE 
-          version = $(cat ./version) 
+          version=$(cat ./version) 
           echo "$(($version+1))" > ./version 
           git config user.email "f.boukezzoula@gmail.com" 
           git commit -m "release version $(cat ./version)"
