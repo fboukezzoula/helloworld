@@ -33,4 +33,15 @@ spec:
   - port: 80
   selector:
     app: poc-helloworld
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: poc-helloworld
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+  selector:
+    app: poc-helloworld    
         
