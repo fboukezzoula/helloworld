@@ -8,13 +8,13 @@ const server = http.createServer((request, response) => {
     <!DOCTYPE html>
     <html>
       <head>
-        <title>Hello World</title>
+        <title>Hello World !</title>
       </head>
       <body>
-        <h1>Hello World</h1>
-        <p>Node version: ${process.env.NODE_VERSION}</p>
-        <p>Build version: ${process.env.BUILD}</p>
-        <p id="countdown"></p>
+        <h1>Hello World !</h1>
+        <p># number/total of the deployment for the day (docker build+tag+push and deploy to kubernetes) : ${process.env.BUILD}</p>
+		<h2><b>
+        <p id="countdown"></p></b></h2>
         <script>
           let timeLeft = 5
           const countdown = document.getElementById('countdown')
