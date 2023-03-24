@@ -51,5 +51,5 @@ jobs:
           git config user.name "BOUKEZZOULA Fouzi"
           git add .
           git commit -m "release version $(cat ./version)"
-          git tag $(cat ./version) && git push https://fboukezoula:$MYPAT@github.com/fboukezzoula/helloworld.git --tags
+          git tag $(cat ./version) && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git --tags
     
