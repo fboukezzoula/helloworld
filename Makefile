@@ -4,7 +4,7 @@ IMAGE_REPO := $(ACR_NAME).azurecr.io/poc-helloworld
 
 .PHONY: build
 build:
-	docker build -t $(IMAGE_REPO):$(VERSION) .
+	docker build -t $(IMAGE_REPO):v$(VERSION) .
 
 .PHONY: registry-login
 registry-login:
@@ -17,7 +17,7 @@ registry-login:
 
 .PHONY: push
 push:
-	docker push $(IMAGE_REPO):$(VERSION)
+	docker push $(IMAGE_REPO):v$(VERSION)
 
 .PHONY: deploy
 deploy:
