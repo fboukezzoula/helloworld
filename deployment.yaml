@@ -19,20 +19,10 @@ spec:
           image: IMAGE_REPO:VERSION
           env:
           - name: BUILD
-            value: "VERSION"           
+            value: "1.0.0"           
           ports:
           - containerPort: 80
             name: poc-helloworld          
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: poc-helloworld
-spec:
-  ports:
-  - port: 80
-  selector:
-    app: poc-helloworld
 ---
 apiVersion: v1
 kind: Service
@@ -64,5 +54,4 @@ spec:
           service:
             name: poc-helloworld
             port: 
-              number: 80        
-        
+              number: 80
