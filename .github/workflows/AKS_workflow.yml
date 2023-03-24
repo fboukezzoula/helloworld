@@ -45,9 +45,10 @@ jobs:
       - name: Increment version and push
         run: |
           cd $GITHUB_WORKSPACE \
-          version = $(cat ./version) \
-          echo "$(($version+1))" > ./version \
-          git config user.email "f.boukezzoula@gmail.com" \
-          git commit -m "release version $(cat ./version)" \  
-          git tag $(cat ./version) && git push https://fboukezoula:$MYPAT@github.com/fboukezzoula/helloworld.git --tags
+          ls -al 
+          #version = $(cat ./version) \
+          #echo "$(($version+1))" > ./version \
+          #git config user.email "f.boukezzoula@gmail.com" \
+          #git commit -m "release version $(cat ./version)" \  
+          #git tag $(cat ./version) && git push https://fboukezoula:$MYPAT@github.com/fboukezzoula/helloworld.git --tags
     
