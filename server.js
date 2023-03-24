@@ -14,11 +14,19 @@ const server = http.createServer((request, response) => {
         <h1>Hello World</h1>
         <p>Node version: ${process.env.NODE_VERSION}</p>
         <p>Build version: ${process.env.BUILD}</p>
+        <p id="countdown"></p>
         <script>
-          setInterval(() => {
-            console.log('Refreshing page...')
-            location.reload()
-          }, 5000)
+          let timeLeft = 5
+          const countdown = document.getElementById('countdown')
+          const countdownInterval = setInterval(() => {
+            countdown.innerText = timeLeft
+            timeLeft--
+            if (timeLeft < 0) {
+              clearInterval(countdownInterval)
+              console.log('Refreshing page...')
+              location.reload()
+            }
+          }, 1000)
         </script>
       </body>
     </html>
