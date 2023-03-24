@@ -28,5 +28,9 @@ jobs:
           uses: azure/aks-set-context@v3
           with:
              resource-group: 'poc-helloworld'
-             cluster-name: 'poc-helloworld'            
+             cluster-name: 'poc-helloworld'    
+
+        - name: 'test AKS'
+        - run: |
+            kubectl get pods     
 
