@@ -24,13 +24,13 @@ jobs:
             docker build . -t ${{ secrets.REGISTRY_LOGIN_SERVER }}/poc-helloworld:${{ github.sha }}
             docker push ${{ secrets.REGISTRY_LOGIN_SERVER }}/poc-helloworld:${{ github.sha }}
 
-        - name: 'AKS set context'
+
           uses: azure/aks-set-context@v3
           with:
              resource-group: 'poc-helloworld'
              cluster-name: 'poc-helloworld'    
 
         - name: 'test AKS'
-        - run: |
+          run: |
             kubectl get pods     
 
