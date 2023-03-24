@@ -53,4 +53,5 @@ jobs:
           git add .
           git commit -m "release version $(cat ./version)"
           git tag $(cat ./version) && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git --tags
+          
     
