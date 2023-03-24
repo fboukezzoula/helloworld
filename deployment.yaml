@@ -1,0 +1,19 @@
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  namespace: helloworld
+  name:
+    poc-helloworld
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: poc-helloworld
+  template:
+    metadata:
+      labels:
+        app: poc-helloworld
+    spec:
+      containers:
+        - name: poc-helloworld
+          image: IMAGE_REPO:VERSION
