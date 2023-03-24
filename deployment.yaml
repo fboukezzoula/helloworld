@@ -35,3 +35,24 @@ spec:
   - port: 80
   selector:
     app: poc-helloworld
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  namespace: helloworld
+  name: hello-world-ingress-static
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: poc-helloworld
+            port: 
+              number: 80
