@@ -5,7 +5,8 @@ on:
     tags:
       - '*'
 env:
-  MYPAT : ${{ secrets.MYPAT }}
+  MYPAT: ${{ secrets.MYPAT }}
+  SHA: ${{ github.sha }}
 
 jobs:
   Build-TagPush-Deploy01:
