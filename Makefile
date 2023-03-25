@@ -4,7 +4,7 @@ IMAGE_REPO := $(ACR_NAME).azurecr.io/poc-helloworld
 
 .PHONY: build
 build:
-	docker build -t $(IMAGE_REPO):v$(VERSION)-$(SHA) .
+	docker build -t $(IMAGE_REPO):$(VERSION)-$(SHA) .
 
 .PHONY: registry-login
 registry-login:
@@ -17,10 +17,9 @@ registry-login:
 
 .PHONY: push
 push:
-	docker push $(IMAGE_REPO):v$(VERSION)-$(SHA)
+	docker push $(IMAGE_REPO):$(VERSION)-$(SHA)
 
 .PHONY: deploy
 deploy:
-	sed 's|IMAGE_REPO|$(IMAGE_REPO)|g; s/VERSION/$(VERSION)/g; s/SHA/$(SHA)/g' ./deployment.yaml | \ 
-	kubectl apply -f -
-	
+	sed -i 's|IMAGE_REPO|$(IMAGE_REPO)|g; s/VERSION/$(VERSION)/g; s/SHA/$(SHA)/g' ./deployment.yaml | \
+		kubectl apply -f -	
