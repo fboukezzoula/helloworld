@@ -20,8 +20,6 @@ spec:
           env:
           - name: BUILD
             value: "VERSION"         
-          - name: OM
-            value: "OM !!!!!!!"                
           ports:
           - containerPort: 80
             name: poc-helloworld          
