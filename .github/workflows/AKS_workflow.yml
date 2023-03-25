@@ -58,12 +58,11 @@ jobs:
   Build-TagPush-Deploy02:
     timeout-minutes: 10
     runs-on: ubuntu-latest
-    needs: [Build-TagPush-Deploy01]
     steps:
       - name: Checkout repo
         uses: actions/checkout@v2
         with:
-          token: ${{ secrets.MYPAT }}
+          token: ${{ secrets.MYPAT }}         
       - name: Build image
         env:
           ACR_NAME: ${{ secrets.ACR_NAME }}
@@ -79,6 +78,8 @@ jobs:
         env:
           ACR_NAME: ${{ secrets.ACR_NAME }}
         run: make push
+      - name: Pause 10 s
+        run: sleep 10         
       - name: Increment version and commit tag for the next loop
         run: |
           cd $GITHUB_WORKSPACE 
@@ -106,7 +107,6 @@ jobs:
   Build-TagPush-Deploy03:
     timeout-minutes: 10
     runs-on: ubuntu-latest
-    needs: [Build-TagPush-Deploy01,Build-TagPush-Deploy02]
     steps:
       - name: Checkout repo
         uses: actions/checkout@v2
@@ -116,6 +116,8 @@ jobs:
         env:
           ACR_NAME: ${{ secrets.ACR_NAME }}
         run: make build
+      - name: Pause 20 s
+        run: sleep 20         
       - name: Login to container registry
         env:
           SERVICE_PRINCIPAL_APP_ID: ${{ secrets.SERVICE_PRINCIPAL_APP_ID }}
@@ -127,6 +129,8 @@ jobs:
         env:
           ACR_NAME: ${{ secrets.ACR_NAME }}
         run: make push
+      - name: Pause 20 s
+        run: sleep 20         
       - name: Increment version and commit tag for the next loop
         run: |
           cd $GITHUB_WORKSPACE 
