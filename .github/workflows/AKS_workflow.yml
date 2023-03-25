@@ -50,7 +50,7 @@ jobs:
           echo $IMAGE_REPO
           echo $SHA  
 
-          sed -i 's|IMAGE_REPO|$IMAGE_REPO|g; s/VERSION/$VERSION/g; s/SHA/$SHA/g' ./deployment.yaml
+          sed -i 's|IMAGE_REPO|${IMAGE_REPO}|g; s/VERSION/${VERSION}/g; s/SHA/${SHA}/g' ./deployment.yaml
           cat ./deployment.yaml
           kubectl apply -f ./deployment.yaml
       - name: Increment version and commit tag for the next loop
@@ -60,6 +60,7 @@ jobs:
           echo "$(($version+1))" > ./version 
           git config user.email "f.boukezzoula@gmail.com" 
           git config user.name "BOUKEZZOULA Fouzi"
+          git pull
           git add .
           git commit -m "release version $(cat ./version)" && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git HEAD:main
           git tag $(cat ./version) && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git --tags
