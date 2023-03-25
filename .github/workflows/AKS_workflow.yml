@@ -7,7 +7,6 @@ on:
 env:
   MYPAT: ${{ secrets.MYPAT }}
   SHA: ${{ github.sha }}
-  IMAGE_REPO: ${{ secrets.ACR_NAME }}
 
 jobs:
   Build-TagPush-Deploy01:
@@ -43,16 +42,9 @@ jobs:
             --name $CLUSTER_NAME \
             --overwrite-existing
       - name: Deploy application
-        run: |
-          VERSION=$(cat ./version)
-
-          echo $VERSION
-          echo $IMAGE_REPO
-          echo $SHA  
-
-          sed -i 's|IMAGE_REPO|${IMAGE_REPO}|g; s/VERSION/${VERSION}/g; s/SHA/${SHA}/g' ./deployment.yaml
-          cat ./deployment.yaml
-          kubectl apply -f ./deployment.yaml
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make deploy
       - name: Increment version and commit tag for the next loop
         run: |
           cd $GITHUB_WORKSPACE 
