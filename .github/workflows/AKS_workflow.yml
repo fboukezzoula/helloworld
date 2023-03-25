@@ -1,9 +1,7 @@
 name: HelloWorld Paralell Jobs
 
-on:
-  push:
-    tags:
-      - '*'
+on: push
+
 env:
   MYPAT: ${{ secrets.MYPAT }}
   SHA: ${{ github.sha }}
@@ -54,5 +52,5 @@ jobs:
           git config user.name "BOUKEZZOULA Fouzi"
           git add .
           git commit -m "release version $(cat ./version)" && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git HEAD:main
-         
+          
 
