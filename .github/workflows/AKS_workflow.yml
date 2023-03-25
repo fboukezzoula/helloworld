@@ -6,6 +6,7 @@ on:
       - '*'
 env:
   MYPAT: ${{ secrets.MYPAT }}
+  ACR_NAME: ${{ secrets.ACR_NAME }}  
   SHA: ${{ github.sha }}
 
 jobs:
