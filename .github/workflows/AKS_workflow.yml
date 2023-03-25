@@ -44,7 +44,10 @@ jobs:
       - name: Deploy application
         env:
           ACR_NAME: ${{ secrets.ACR_NAME }}
-        run: make deploy
+        run: |
+          IMAGE_REPO=$(ACR_NAME).azurecr.io/poc-helloworld
+          sed -i 's|IMAGE_REPO|$(IMAGE_REPO)|g; s/VERSION/$(VERSION)/g; s/SHA/$(SHA)/g' ./deployment.yaml
+          kubectl apply -f ./deployment.yaml
       - name: Increment version and commit tag for the next loop
         run: |
           cd $GITHUB_WORKSPACE 
@@ -55,4 +58,4 @@ jobs:
           git add .
           git commit -m "release version $(cat ./version)"
           git tag $(cat ./version) && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git --tags
-                   
+
