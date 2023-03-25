@@ -16,10 +16,10 @@ spec:
     spec:
       containers:
         - name: poc-helloworld
-          image: IMAGE_REPO:VERSION-SHA
+          image: $(IMAGE_REPO):$(VERSION)-$(SHA)
           env:
           - name: BUILD
-            value: "VERSION"           
+            value: "$(VERSION)"           
           ports:
           - containerPort: 80
             name: poc-helloworld          
