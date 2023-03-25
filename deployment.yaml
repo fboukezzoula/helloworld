@@ -19,7 +19,9 @@ spec:
           image: azegistry.azurecr.io/poc-helloworld:VERSION-SHA
           env:
           - name: BUILD
-            value: "VERSION"           
+            value: "VERSION"         
+          - name: OM
+            value: "OM !!!!!!!"                
           ports:
           - containerPort: 80
             name: poc-helloworld          

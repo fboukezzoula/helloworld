@@ -12,7 +12,8 @@ const server = http.createServer((request, response) => {
       </head>
       <body>
         <h1>Hello World !</h1>
-        <p># number/total of the deployment for the day (docker build+tag+push and deploy to kubernetes) : ${process.env.BUILD}</p>
+        <p># number/total of the deployment for the day (docker build+tag+push and deploy to kubernetes) : ${process.env.BUILD} </p>
+        <p># ${process.env.OM} </p>
 		<h2><b>
         <p id="countdown"></p></b></h2>
         <script>
