@@ -1,6 +1,6 @@
 name: HelloWorld Paralell Jobs
 
-on: [push , workflow_dispatch]
+on: [workflow_dispatch]
 
 env:
   MYPAT: ${{ secrets.MYPAT }}
@@ -19,6 +19,8 @@ jobs:
       - name: Build image
         env:
           ACR_NAME: ${{ secrets.ACR_NAME }}
+          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+          AZURE_STORAGE_CONTAINER_NAME: ${{ secrets.AZURE_STORAGE_CONTAINER_NAME }}
         run: make build
       - name: Login to container registry
         env:
@@ -47,8 +49,8 @@ jobs:
       - name: Increment version and commit tag for the next loop
         run: |
           cd $GITHUB_WORKSPACE 
-          version=$(cat ./version) 
-          touch ./builds/build_number_$(date '+%Y%m%d%H%M%S').txt 
+          ls -al 
+          touch $GITHUB_WORKSPACE/builds/build_number_$(date '+%Y%m%d%H%M%S').txt 
           git config user.email "f.boukezzoula@gmail.com" 
           git config user.name "BOUKEZZOULA Fouzi"
           git add .
