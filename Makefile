@@ -21,5 +21,5 @@ push:
 
 .PHONY: deploy
 deploy:
-	sed -i -e 's/IMAGE_REPO/$(IMAGE_REPO)/g' -e 's/VERSION/$(VERSION)/g' -e 's/SHA/$(SHA)/g'  ./deployment.yaml | \
+	sed -i -e 's/IMAGE_REPO/$(IMAGE_REPO)' -e 'VERSION/$(VERSION)' -e 'SHA/$(SHA)'  ./deployment.yaml | \	
 		kubectl apply -f -
