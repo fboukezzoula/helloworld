@@ -44,7 +44,8 @@ jobs:
             --overwrite-existing
       - name: Deploy application
         run: |
-          sed -i 's|IMAGE_REPO|${{ IMAGE_REPO }})|g; s/VERSION/$(cat ./version)/g; s/SHA/${{ github.sha }}/g' ./deployment.yaml
+          VERSION=$(cat ./version)
+          sed -i 's|IMAGE_REPO|$IMAGE_REPO|g; s/VERSION/$VERSION/g; s/SHA/$SHA/g' ./deployment.yaml
           cat ./deployment.yaml
           kubectl apply -f ./deployment.yaml
       - name: Increment version and commit tag for the next loop
