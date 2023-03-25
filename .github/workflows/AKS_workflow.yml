@@ -45,7 +45,6 @@ jobs:
         run: make deploy
 
   Build-TagPush-Deploy02:
-    needs: Build-TagPush-Deploy01
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
