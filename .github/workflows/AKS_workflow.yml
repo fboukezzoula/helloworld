@@ -43,18 +43,9 @@ jobs:
         env:
           ACR_NAME: ${{ secrets.ACR_NAME }}
         run: make deploy
-      - name: Increment version and commit tag for the next loop
-        run: |
-          env
-          cd $GITHUB_WORKSPACE 
-          version=$(cat ./version) 
-          echo "$(($version+1))" > ./version 
-          git config user.email "f.boukezzoula@gmail.com" 
-          git config user.name "BOUKEZZOULA Fouzi"
-          git add .
-          git commit -m "release version $(cat ./version)" && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git HEAD:main
 
   Build-TagPush-Deploy02:
+    needs: Build-TagPush-Deploy01
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
@@ -95,7 +86,7 @@ jobs:
           env
           cd $GITHUB_WORKSPACE 
           version=$(cat ./version) 
-          echo "$(($version+1))" > ./version 
+          echo "$(($version+2))" > ./version 
           git config user.email "f.boukezzoula@gmail.com" 
           git config user.name "BOUKEZZOULA Fouzi"
           git add .
