@@ -102,8 +102,9 @@ jobs:
           git add .
           git commit -m "release version $(cat ./version)"
           git tag $(cat ./version) && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git --tags   
-          
- Build-TagPush-Deploy03:
+ 
+    
+  Build-TagPush-Deploy03:
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
