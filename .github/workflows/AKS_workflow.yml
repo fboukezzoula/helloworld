@@ -45,6 +45,11 @@ jobs:
       - name: Deploy application
         run: |
           VERSION=$(cat ./version)
+
+          echo $VERSION
+          echo $IMAGE_REPO
+          echo $SHA  
+
           sed -i 's|IMAGE_REPO|$IMAGE_REPO|g; s/VERSION/$VERSION/g; s/SHA/$SHA/g' ./deployment.yaml
           cat ./deployment.yaml
           kubectl apply -f ./deployment.yaml
