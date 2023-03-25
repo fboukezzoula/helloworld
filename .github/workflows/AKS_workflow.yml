@@ -7,6 +7,7 @@ on:
 env:
   MYPAT: ${{ secrets.MYPAT }}
   SHA: ${{ github.sha }}
+  IMAGE_REPO: ${{ secrets.ACR_NAME }}.azurecr.io/poc-helloworld
 
 jobs:
   Build-TagPush-Deploy01:
@@ -43,8 +44,7 @@ jobs:
             --overwrite-existing
       - name: Deploy application
         run: |
-          IMAGE_REPO=${{ secrets.ACR_NAME }}.azurecr.io/poc-helloworld
-          sed -i 's|IMAGE_REPO|$(IMAGE_REPO)|g; s/VERSION/$(VERSION)/g; s/SHA/$(SHA)/g' ./deployment.yaml
+          sed -i 's|IMAGE_REPO|${{ IMAGE_REPO }})|g; s/VERSION/$(cat ./version)/g; s/SHA/${{ github.sha }}/g' ./deployment.yaml
           cat ./deployment.yaml
           kubectl apply -f ./deployment.yaml
       - name: Increment version and commit tag for the next loop
