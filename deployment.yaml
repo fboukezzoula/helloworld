@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: poc-helloworld
-          image: IMAGE_REPO:VERSION-SHA
+          image: IMAGE_REPO.azurecr.io/poc-helloworld:VERSION-SHA
           env:
           - name: BUILD
             value: "VERSION"           

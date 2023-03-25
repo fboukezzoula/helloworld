@@ -7,7 +7,7 @@ on:
 env:
   MYPAT: ${{ secrets.MYPAT }}
   SHA: ${{ github.sha }}
-  IMAGE_REPO: ${{ secrets.ACR_NAME }}.azurecr.io/poc-helloworld
+  IMAGE_REPO: ${{ secrets.ACR_NAME }}
 
 jobs:
   Build-TagPush-Deploy01:
