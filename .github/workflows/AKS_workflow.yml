@@ -14,17 +14,6 @@ jobs:
         uses: actions/checkout@v2
         with:
           token: ${{ secrets.MYPAT }}
-      - name: Increment version and push
-        run: |
-          cd $GITHUB_WORKSPACE 
-          version=$(cat ./version) 
-          echo "$(($version+1))" > ./version 
-          git config user.email "f.boukezzoula@gmail.com" 
-          git config user.name "BOUKEZZOULA Fouzi"
-          git add .
-          git commit -m "release version $(cat ./version)"
-          git tag $(cat ./version) && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git --tags          
-
       - name: Build image
         env:
           ACR_NAME: ${{ secrets.ACR_NAME }}
@@ -40,6 +29,16 @@ jobs:
         env:
           ACR_NAME: ${{ secrets.ACR_NAME }}
         run: make push
+      - name: Increment version and commit tag for the next loop
+        run: |
+          cd $GITHUB_WORKSPACE 
+          version=$(cat ./version) 
+          echo "$(($version+1))" > ./version 
+          git config user.email "f.boukezzoula@gmail.com" 
+          git config user.name "BOUKEZZOULA Fouzi"
+          git add .
+          git commit -m "release version $(cat ./version)"
+          git tag $(cat ./version) && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git --tags                
       - name: Get AKS credentials
         env:
           CLUSTER_RESOURCE_GROUP_NAME: ${{ secrets.CLUSTER_RESOURCE_GROUP_NAME }}
