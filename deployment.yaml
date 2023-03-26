@@ -22,8 +22,10 @@ spec:
             value: "VERSION"     
           - name: AZURE_STORAGE_CONTAINER_NAME
             value: "builds"  
-          - name: AZURE_STORAGE_CONNECTION_STRING   
-            value: "DefaultEndpointsProtocol=https;AccountName=numberbuilds;AccountKey=Yl6bVH/iNARuXxB9ztDfpR36FagkN52usFVFE9lrlGIslxYA/kg8lVYnQjdxXYbrpwQ8Aue2KDYZ+ASt6xxB0Q==;EndpointSuffix=core.windows.net"
+          - name: AZURE_STORAGE_CONNECTION_STRING 
+              valueFrom: 
+                  secretKeyRef: 
+                      name: connectionstring 
           ports:
           - containerPort: 80
             name: poc-helloworld          
