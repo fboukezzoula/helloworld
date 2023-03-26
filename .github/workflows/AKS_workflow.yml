@@ -55,12 +55,7 @@ jobs:
 
           cd $GITHUB_WORKSPACE/builds
           # Upload sample files to container
-          az storage blob upload-batch \              
-              --connection-string  ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }} \ 
-              --pattern "build_number_*.txt" \
-              --source . \
-              --destination builds \
-              --overwrite
+          az storage blob upload-batch -d builds -s GITHUB_WORKSPACE/builds --pattern *.txt --account-name ${{ secrets.AZURE_STORAGE_ACCOUNT }} --account-key ${{ secrets.AZURE_STORAGE_ACCESS_KEY }} --overwrite
 
           cd $GITHUB_WORKSPACE     
           git config user.email "f.boukezzoula@gmail.com" 
