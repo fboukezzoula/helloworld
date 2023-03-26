@@ -50,11 +50,13 @@ jobs:
 
           export AZURE_STORAGE_ACCOUNT=${{ secrets.AZURE_STORAGE_ACCOUNT }}
           export AZURE_STORAGE_ACCESS_KEY=${{ secrets.AZURE_STORAGE_ACCESS_KEY }}
-          env          
+          
           touch $GITHUB_WORKSPACE/builds/build_number_$(date '+%Y%m%d%H%M%S').txt 
+
+          ls -al $GITHUB_WORKSPACE/builds
           # Upload sample files to container
           az storage blob upload-batch \
-              --pattern "./$GITHUB_WORKSPACE/builds/build_number_*.txt" \
+              --pattern "$GITHUB_WORKSPACE/builds/build_number_*.txt" \
               --source . \
               --destination builds \
               --overwrite
