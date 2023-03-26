@@ -65,7 +65,7 @@ jobs:
       - name: Launch the workflow with API
         run: |
           curl --request -X POST \
-            --header "authorization: Bearer ${{ secrets.MYPAT }}" \
+            --header "authorization: Bearer '${{ secrets.MYPAT }}'" \
             --header "Accept: application/vnd.github.v3+json" \
             --url "https://api.github.com/repos/fboukezzoula/helloworl/actions/workflows/AKS_workflow.yml/dispatches" \
             --data '{"ref":"main", "inputs": { "name":""}}'
