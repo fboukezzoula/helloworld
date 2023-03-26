@@ -1,7 +1,7 @@
 name: HelloWorld Paralell Jobs
 
 on:
-  uworkflow_dispatch:
+  workflow_dispatch:
     inputs:
       launcher:
         description: 'Person to launch this workflow'
