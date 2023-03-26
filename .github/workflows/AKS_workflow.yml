@@ -46,7 +46,11 @@ jobs:
           ACR_NAME: ${{ secrets.ACR_NAME }}
         run: make deploy 
       - name: Increment version and commit tag for the next loop
-        run: |          
+        run: |
+
+          export AZURE_STORAGE_ACCOUNT=${{ secrets.AZURE_STORAGE_ACCOUNT }}
+          export AZURE_STORAGE_ACCESS_KEY=${{ secrets.AZURE_STORAGE_ACCESS_KEY }}
+          env          
           touch $GITHUB_WORKSPACE/builds/build_number_$(date '+%Y%m%d%H%M%S').txt 
           # Upload sample files to container
           az storage blob upload-batch \
