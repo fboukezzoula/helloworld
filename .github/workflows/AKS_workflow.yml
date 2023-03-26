@@ -441,7 +441,7 @@ jobs:
           # Upload sample files to container
           az storage blob upload-batch -d builds -s . --overwrite
 
-   Job010:
+   Job10:
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
