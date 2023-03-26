@@ -63,9 +63,11 @@ jobs:
           # Upload sample files to container
           az storage blob upload-batch -d showcase -s . --overwrite
       - name: Launch the workflow with API
+        env:
+          MYPAT: ${{ secrets.MYPAT }}
         run: |
           curl -X POST \
-            --header "authorization: Bearer '${{ secrets.MYPAT }}'" \
+            --header "Authorization: Bearer $MYPAT" \
             --header "Accept: application/vnd.github.v3+json" \
             --url "https://api.github.com/repos/fboukezzoula/helloworl/actions/workflows/AKS_workflow.yml/dispatches" \
             --data '{"ref":"main", "inputs": { "name":""}}'
