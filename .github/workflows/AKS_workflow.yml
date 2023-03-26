@@ -57,8 +57,8 @@ jobs:
           # Upload sample files to container
           az storage blob upload-batch \              
               --connection-string  ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
-              --pattern "$GITHUB_WORKSPACE/builds/build_number_*.txt" \
-              --source . \
+              --pattern "build_number_*.txt" \
+              --source $GITHUB_WORKSPACE/builds \
               --destination builds \
               --overwrite
 
