@@ -5,8 +5,6 @@ on: [push,workflow_dispatch]
 env:
   MYPAT: ${{ secrets.MYPAT }}
   SHA: ${{ github.sha }}
-  AZURE_STORAGE_CONTAINER_NAME: ${{ AZURE_STORAGE_CONTAINER_NAME }}
-  AZURE_STORAGE_CONNECTION_STRING: ${{ AZURE_STORAGE_CONNECTION_STRING }}
 
 jobs:
    Build-TagPush-Deploy01:
