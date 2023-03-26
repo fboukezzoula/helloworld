@@ -270,7 +270,9 @@ jobs:
           token: ${{ secrets.MYPAT }}
       - name: Commit for triggering next parallel jobs
         run: |
-          cd $GITHUB_WORKSPACE     
+          cd $GITHUB_WORKSPACE 
+          touch /tmp/sdsdsd.txt
+          ls -al /tmp    
           version=$(cat ./version) 
           echo "$(($version+1))" > ./version 
           git config user.email "f.boukezzoula@gmail.com" 
