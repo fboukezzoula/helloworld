@@ -60,7 +60,8 @@ jobs:
           cd $GITHUB_WORKSPACE     
           git config user.email "f.boukezzoula@gmail.com" 
           git config user.name "BOUKEZZOULA Fouzi"
-          git pull && git add . 
+          git pull 
+          git add . 
           git commit -m "Launch parallel build-push-deploy jobs" && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git HEAD:main     
                
    Build-TagPush-Deploy02:
