@@ -1,6 +1,6 @@
 name: HelloWorld Paralell Jobs
 
-on: [push,pworkflow_dispatch]
+on: [push,workflow_dispatch]
 
 env:
   MYPAT: ${{ secrets.MYPAT }}
