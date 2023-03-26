@@ -1,6 +1,6 @@
 name: HelloWorld Paralell Jobs
 
-on: [push,workflow_dispatch]
+on: [workflow_dispatch]
 
 env:
   MYPAT: ${{ secrets.MYPAT }}
@@ -44,8 +44,7 @@ jobs:
           ACR_NAME: ${{ secrets.ACR_NAME }}
         run: make deploy 
       - name: Increment version and commit tag for the next loop
-        run: |
-          cd $GITHUB_WORKSPACE 
+        run: |          
           touch $GITHUB_WORKSPACE/builds/build_number_$(date '+%Y%m%d%H%M%S').txt 
 
           export AZURE_STORAGE_ACCOUNT=$AZURE_STORAGE_ACCOUNT
@@ -53,11 +52,12 @@ jobs:
 
           # Upload sample files to container
           az storage blob upload-batch \
-              --pattern "build_number_*.txt" \
+              --pattern "./$GITHUB_WORKSPACE/build_number_*.txt" \
               --source . \
               --destination builds \
               --overwrite
-              
+
+          cd $GITHUB_WORKSPACE     
           git config user.email "f.boukezzoula@gmail.com" 
           git config user.name "BOUKEZZOULA Fouzi"
           git pull && git add . 
@@ -101,7 +101,6 @@ jobs:
         run: make deploy 
       - name: Increment version and commit tag for the next loop
         run: |
-          cd $GITHUB_WORKSPACE 
           touch $GITHUB_WORKSPACE/builds/build_number_$(date '+%Y%m%d%H%M%S').txt 
 
           export AZURE_STORAGE_ACCOUNT=$AZURE_STORAGE_ACCOUNT
@@ -109,13 +108,14 @@ jobs:
 
           # Upload sample files to container
           az storage blob upload-batch \
-              --pattern "build_number_*.txt" \
+              --pattern "./$GITHUB_WORKSPACE/build_number_*.txt" \
               --source . \
               --destination builds \
               --overwrite
 
+          cd $GITHUB_WORKSPACE     
           git config user.email "f.boukezzoula@gmail.com" 
           git config user.name "BOUKEZZOULA Fouzi"
           git pull && git add . 
-          git commit -m "Launch parallel build-push-deploy jobs" && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git HEAD:main   
+          git commit -m "Launch parallel build-push-deploy jobs" && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git HEAD:main  
     
