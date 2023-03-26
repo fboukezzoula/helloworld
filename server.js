@@ -9,7 +9,7 @@ const server = http.createServer(async (request, response) => {
   // Create a new BlobServiceClient with your Azure Storage account connection string
   const blobServiceClient = BlobServiceClient.fromConnectionString(process.env.AZURE_STORAGE_CONNECTION_STRING);
   // Get a reference to your Blob Container
-  const containerClient = blobServiceClient.getContainerClient(process.env.AZURE_STORAGE_CONTAINER_NAME);
+  const containerClient = blobServiceClient.getContainerClient('showcase');
 
   // Get the list of blobs in the container
   const blobList = containerClient.listBlobsFlat();

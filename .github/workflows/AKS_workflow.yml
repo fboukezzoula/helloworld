@@ -55,7 +55,7 @@ jobs:
 
           cd /tmp/buildhelloworld/
           # Upload sample files to container
-          az storage blob upload-batch -d builds -s . --overwrite
+          az storage blob upload-batch -d showcase -s . --overwrite
                
    Job02:
     timeout-minutes: 10
@@ -103,7 +103,7 @@ jobs:
 
           cd /tmp/buildhelloworld/
           # Upload sample files to container
-          az storage blob upload-batch -d builds -s . --overwrite
+          az storage blob upload-batch -d showcase -s . --overwrite
 
    Job03:
     timeout-minutes: 10
@@ -151,7 +151,7 @@ jobs:
 
           cd /tmp/buildhelloworld/
           # Upload sample files to container
-          az storage blob upload-batch -d builds -s . --overwrite
+          az storage blob upload-batch -d showcase -s . --overwrite
 
    Job04:
     timeout-minutes: 10
@@ -199,7 +199,7 @@ jobs:
 
           cd /tmp/buildhelloworld/
           # Upload sample files to container
-          az storage blob upload-batch -d builds -s . --overwrite
+          az storage blob upload-batch -d showcase -s . --overwrite
 
    Job05:
     timeout-minutes: 10
@@ -247,7 +247,7 @@ jobs:
 
           cd /tmp/buildhelloworld/
           # Upload sample files to container
-          az storage blob upload-batch -d builds -s . --overwrite
+          az storage blob upload-batch -d showcase -s . --overwrite
 
    Job06:
     timeout-minutes: 10
@@ -295,7 +295,7 @@ jobs:
 
           cd /tmp/buildhelloworld/
           # Upload sample files to container
-          az storage blob upload-batch -d builds -s . --overwrite
+          az storage blob upload-batch -d showcase -s . --overwrite
 
    Job07:
     timeout-minutes: 10
@@ -343,7 +343,7 @@ jobs:
 
           cd /tmp/buildhelloworld/
           # Upload sample files to container
-          az storage blob upload-batch -d builds -s . --overwrite
+          az storage blob upload-batch -d showcase -s . --overwrite
 
    Job08:
     timeout-minutes: 10
@@ -391,7 +391,7 @@ jobs:
 
           cd /tmp/buildhelloworld/
           # Upload sample files to container
-          az storage blob upload-batch -d builds -s . --overwrite
+          az storage blob upload-batch -d showcase -s . --overwrite
 
    Job09:
     timeout-minutes: 10
@@ -439,7 +439,7 @@ jobs:
 
           cd /tmp/buildhelloworld/
           # Upload sample files to container
-          az storage blob upload-batch -d builds -s . --overwrite
+          az storage blob upload-batch -d showcase -s . --overwrite
 
    Job10:
     timeout-minutes: 10
@@ -487,7 +487,7 @@ jobs:
 
           cd /tmp/buildhelloworld/
           # Upload sample files to container
-          az storage blob upload-batch -d builds -s . --overwrite
+          az storage blob upload-batch -d showcase -s . --overwrite
 
 
    Commit-Next-Loop-Parallel-Jobs:
