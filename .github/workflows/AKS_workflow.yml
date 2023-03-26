@@ -3,7 +3,7 @@ name: HelloWorld Paralell Jobs
 on:
   workflow_dispatch:
     inputs:
-      mauncher:
+      launcher:
         description: 'Person to launch this workflow'
         required: false
         default: 'Fouzi'
@@ -53,15 +53,12 @@ jobs:
         run: make deploy 
       - name: Create new file and upload it to blob container
         run: |
-          export AZURE_STORAGE_ACCOUNT=${{ secrets.AZURE_STORAGE_ACCOUNT }}
-          export AZURE_STORAGE_ACCESS_KEY=${{ secrets.AZURE_STORAGE_ACCESS_KEY }}
-          
           mkdir -p /tmp/buildhelloworld
           touch /tmp/buildhelloworld/build_number_$(date '+%Y%m%d%H%M%S').txt 
 
           cd /tmp/buildhelloworld/
           # Upload sample files to container
-          az storage blob upload-batch -d showcase -s . --overwrite
+          az storage blob upload-batch --connection-string "${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}" -d showcase -s . --overwrite
       - name: Launch the workflow with API
         env:
           MYPAT: ${{ secrets.MYPAT }}
@@ -70,5 +67,5 @@ jobs:
             --header "Authorization: Bearer $MYPAT" \
             --header "Accept: application/vnd.github.v3+json" \
             --url "https://api.github.com/repos/fboukezzoula/helloworld/actions/workflows/AKS_workflow.yml/dispatches" \
-            --data '{"ref":"main", "inputs": { "name":""}}'
+            --data '{"ref":"main", "inputs": { "launcher":"Fouzi"}}'
 
