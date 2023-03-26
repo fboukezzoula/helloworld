@@ -19,8 +19,6 @@ jobs:
       - name: Build image
         env:
           ACR_NAME: ${{ secrets.ACR_NAME }}
-          AZURE_STORAGE_CONNECTION_STRING: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
-          AZURE_STORAGE_CONTAINER_NAME: ${{ secrets.AZURE_STORAGE_CONTAINER_NAME }}
         run: make build
       - name: Login to container registry
         env:

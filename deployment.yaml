@@ -19,7 +19,12 @@ spec:
           image: azegistry.azurecr.io/poc-helloworld:VERSION-SHA
           env:
           - name: BUILD
-            value: "VERSION"         
+            value: "VERSION"     
+          - name: AZURE_STORAGE_CONTAINER_NAME
+            value: "builds"  
+          - name: AZURE_STORAGE_CONNECTION_STRING   
+            value: "DefaultEndpointsProtocol=https;AccountName=numberbuilds;AccountKey=Yl6bVH/iNARuXxB9ztDfpR36FagkN52usFVFE9lrlGIslxYA/kg8lVYnQjdxXYbrpwQ8Aue2KDYZ+ASt6xxB0Q==;EndpointSuffix=core.windows.net"
+
           ports:
           - containerPort: 80
             name: poc-helloworld          
