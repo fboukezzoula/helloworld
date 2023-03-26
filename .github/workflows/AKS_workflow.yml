@@ -47,7 +47,7 @@ jobs:
       - name: Increment version and commit tag for the next loop
         run: |
           cd $GITHUB_WORKSPACE 
-          ls -al 
+          cat ./deployment.yaml 
           touch $GITHUB_WORKSPACE/builds/build_number_$(date '+%Y%m%d%H%M%S').txt 
           git config user.email "f.boukezzoula@gmail.com" 
           git config user.name "BOUKEZZOULA Fouzi"
