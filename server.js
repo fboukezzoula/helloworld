@@ -1,9 +1,29 @@
-const http = require('http')
+const http = require('http');
+const { BlobServiceClient } = require('@azure/storage-blob');
 
-const port = 80
+const port = 80;
 
-const server = http.createServer((request, response) => {
-  response.writeHead(200, {'Content-Type': 'text/html'})
+const server = http.createServer(async (request, response) => {
+  response.writeHead(200, { 'Content-Type': 'text/html' });
+
+  // Create a new BlobServiceClient with your Azure Storage account connection string
+  const blobServiceClient = BlobServiceClient.fromConnectionString(process.env.AZURE_STORAGE_CONNECTION_STRING);
+  // Get a reference to your Blob Container
+  const containerClient = blobServiceClient.getContainerClient(process.env.AZURE_STORAGE_CONTAINER_NAME);
+
+  // Get the list of blobs in the container
+  const blobList = containerClient.listBlobsFlat();
+
+  // Count the total number of blobs/files
+  let count = 0;
+  for await (const blob of blobList) {
+    count++;
+  }
+
+  // Replace the BUILD environment variable value with the count
+  process.env.BUILD = count;
+
+  // Write the response with the updated BUILD value
   response.write(`
     <!DOCTYPE html>
     <html>
@@ -30,8 +50,10 @@ const server = http.createServer((request, response) => {
         </script>
       </body>
     </html>
-  `)
-  response.end()
-})
+  `);
 
-server.listen(port)
+  response.end();
+});
+
+server.listen(port);
+
