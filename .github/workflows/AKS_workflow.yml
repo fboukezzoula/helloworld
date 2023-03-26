@@ -45,9 +45,8 @@ jobs:
         env:
           ACR_NAME: ${{ secrets.ACR_NAME }}
         run: make deploy 
-      - name: Increment version and commit tag for the next loop
+      - name: Create new file and upload it to blob container
         run: |
-
           export AZURE_STORAGE_ACCOUNT=${{ secrets.AZURE_STORAGE_ACCOUNT }}
           export AZURE_STORAGE_ACCESS_KEY=${{ secrets.AZURE_STORAGE_ACCESS_KEY }}
           
@@ -93,7 +92,7 @@ jobs:
         env:
           ACR_NAME: ${{ secrets.ACR_NAME }}
         run: make deploy 
-      - name: Increment version and commit tag for the next loop
+      - name: Create new file and upload it to blob container
         run: |
           export AZURE_STORAGE_ACCOUNT=${{ secrets.AZURE_STORAGE_ACCOUNT }}
           export AZURE_STORAGE_ACCESS_KEY=${{ secrets.AZURE_STORAGE_ACCESS_KEY }}
@@ -140,7 +139,7 @@ jobs:
         env:
           ACR_NAME: ${{ secrets.ACR_NAME }}
         run: make deploy 
-      - name: Increment version and commit tag for the next loop
+      - name: Create new file and upload it to blob container
         run: |
           export AZURE_STORAGE_ACCOUNT=${{ secrets.AZURE_STORAGE_ACCOUNT }}
           export AZURE_STORAGE_ACCESS_KEY=${{ secrets.AZURE_STORAGE_ACCESS_KEY }}
@@ -150,13 +149,6 @@ jobs:
           cd $GITHUB_WORKSPACE/builds
           # Upload sample files to container
           az storage blob upload-batch -d builds -s . --overwrite
-
-          cd $GITHUB_WORKSPACE     
-          git config user.email "f.boukezzoula@gmail.com" 
-          git config user.name "BOUKEZZOULA Fouzi"
-          git pull 
-          git add . 
-          git commit -m "Launch parallel build-push-deploy jobs" && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git HEAD:main 
 
    Job04:
     timeout-minutes: 10
@@ -194,7 +186,7 @@ jobs:
         env:
           ACR_NAME: ${{ secrets.ACR_NAME }}
         run: make deploy 
-      - name: Increment version and commit tag for the next loop
+      - name: Create new file and upload it to blob container
         run: |
           export AZURE_STORAGE_ACCOUNT=${{ secrets.AZURE_STORAGE_ACCOUNT }}
           export AZURE_STORAGE_ACCESS_KEY=${{ secrets.AZURE_STORAGE_ACCESS_KEY }}
@@ -204,13 +196,6 @@ jobs:
           cd $GITHUB_WORKSPACE/builds
           # Upload sample files to container
           az storage blob upload-batch -d builds -s . --overwrite
-
-          cd $GITHUB_WORKSPACE     
-          git config user.email "f.boukezzoula@gmail.com" 
-          git config user.name "BOUKEZZOULA Fouzi"
-          git pull 
-          git add . 
-          git commit -m "Launch parallel build-push-deploy jobs" && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git HEAD:main 
 
    Job05:
     timeout-minutes: 10
@@ -248,7 +233,7 @@ jobs:
         env:
           ACR_NAME: ${{ secrets.ACR_NAME }}
         run: make deploy 
-      - name: Increment version and commit tag for the next loop
+      - name: Create new file and upload it to blob container
         run: |
           export AZURE_STORAGE_ACCOUNT=${{ secrets.AZURE_STORAGE_ACCOUNT }}
           export AZURE_STORAGE_ACCESS_KEY=${{ secrets.AZURE_STORAGE_ACCESS_KEY }}
