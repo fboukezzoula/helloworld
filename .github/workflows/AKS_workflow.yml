@@ -249,9 +249,250 @@ jobs:
           # Upload sample files to container
           az storage blob upload-batch -d builds -s . --overwrite
 
-   Commit-Next-Loop:
+   Job06:
     timeout-minutes: 10
-    needs: [Job01,Job02,Job03,Job04,Job05]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v2
+        with:
+          token: ${{ secrets.MYPAT }}
+      - name: Build image
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make build
+      - name: Login to container registry
+        env:
+          SERVICE_PRINCIPAL_APP_ID: ${{ secrets.SERVICE_PRINCIPAL_APP_ID }}
+          SERVICE_PRINCIPAL_SECRET: ${{ secrets.SERVICE_PRINCIPAL_SECRET }}
+          SERVICE_PRINCIPAL_TENANT: ${{ secrets.SERVICE_PRINCIPAL_TENANT }}
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make registry-login
+      - name: Push image
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make push
+      - name: Get AKS credentials
+        env:
+          CLUSTER_RESOURCE_GROUP_NAME: ${{ secrets.CLUSTER_RESOURCE_GROUP_NAME }}
+          CLUSTER_NAME: ${{ secrets.CLUSTER_NAME }}
+        run: |
+          az aks get-credentials \
+            --resource-group $CLUSTER_RESOURCE_GROUP_NAME \
+            --name $CLUSTER_NAME \
+            --overwrite-existing
+      - name: Deploy application
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make deploy 
+      - name: Create new file and upload it to blob container
+        run: |
+          export AZURE_STORAGE_ACCOUNT=${{ secrets.AZURE_STORAGE_ACCOUNT }}
+          export AZURE_STORAGE_ACCESS_KEY=${{ secrets.AZURE_STORAGE_ACCESS_KEY }}
+          
+          mkdir -p /tmp/buildhelloworld
+          touch /tmp/buildhelloworld/build_number_$(date '+%Y%m%d%H%M%S').txt 
+
+          cd /tmp/buildhelloworld/
+          # Upload sample files to container
+          az storage blob upload-batch -d builds -s . --overwrite
+
+   Job07:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v2
+        with:
+          token: ${{ secrets.MYPAT }}
+      - name: Build image
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make build
+      - name: Login to container registry
+        env:
+          SERVICE_PRINCIPAL_APP_ID: ${{ secrets.SERVICE_PRINCIPAL_APP_ID }}
+          SERVICE_PRINCIPAL_SECRET: ${{ secrets.SERVICE_PRINCIPAL_SECRET }}
+          SERVICE_PRINCIPAL_TENANT: ${{ secrets.SERVICE_PRINCIPAL_TENANT }}
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make registry-login
+      - name: Push image
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make push
+      - name: Get AKS credentials
+        env:
+          CLUSTER_RESOURCE_GROUP_NAME: ${{ secrets.CLUSTER_RESOURCE_GROUP_NAME }}
+          CLUSTER_NAME: ${{ secrets.CLUSTER_NAME }}
+        run: |
+          az aks get-credentials \
+            --resource-group $CLUSTER_RESOURCE_GROUP_NAME \
+            --name $CLUSTER_NAME \
+            --overwrite-existing
+      - name: Deploy application
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make deploy 
+      - name: Create new file and upload it to blob container
+        run: |
+          export AZURE_STORAGE_ACCOUNT=${{ secrets.AZURE_STORAGE_ACCOUNT }}
+          export AZURE_STORAGE_ACCESS_KEY=${{ secrets.AZURE_STORAGE_ACCESS_KEY }}
+          
+          mkdir -p /tmp/buildhelloworld
+          touch /tmp/buildhelloworld/build_number_$(date '+%Y%m%d%H%M%S').txt 
+
+          cd /tmp/buildhelloworld/
+          # Upload sample files to container
+          az storage blob upload-batch -d builds -s . --overwrite
+
+   Job08:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v2
+        with:
+          token: ${{ secrets.MYPAT }}
+      - name: Build image
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make build
+      - name: Login to container registry
+        env:
+          SERVICE_PRINCIPAL_APP_ID: ${{ secrets.SERVICE_PRINCIPAL_APP_ID }}
+          SERVICE_PRINCIPAL_SECRET: ${{ secrets.SERVICE_PRINCIPAL_SECRET }}
+          SERVICE_PRINCIPAL_TENANT: ${{ secrets.SERVICE_PRINCIPAL_TENANT }}
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make registry-login
+      - name: Push image
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make push
+      - name: Get AKS credentials
+        env:
+          CLUSTER_RESOURCE_GROUP_NAME: ${{ secrets.CLUSTER_RESOURCE_GROUP_NAME }}
+          CLUSTER_NAME: ${{ secrets.CLUSTER_NAME }}
+        run: |
+          az aks get-credentials \
+            --resource-group $CLUSTER_RESOURCE_GROUP_NAME \
+            --name $CLUSTER_NAME \
+            --overwrite-existing
+      - name: Deploy application
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make deploy 
+      - name: Create new file and upload it to blob container
+        run: |
+          export AZURE_STORAGE_ACCOUNT=${{ secrets.AZURE_STORAGE_ACCOUNT }}
+          export AZURE_STORAGE_ACCESS_KEY=${{ secrets.AZURE_STORAGE_ACCESS_KEY }}
+          
+          mkdir -p /tmp/buildhelloworld
+          touch /tmp/buildhelloworld/build_number_$(date '+%Y%m%d%H%M%S').txt 
+
+          cd /tmp/buildhelloworld/
+          # Upload sample files to container
+          az storage blob upload-batch -d builds -s . --overwrite
+
+   Job09:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v2
+        with:
+          token: ${{ secrets.MYPAT }}
+      - name: Build image
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make build
+      - name: Login to container registry
+        env:
+          SERVICE_PRINCIPAL_APP_ID: ${{ secrets.SERVICE_PRINCIPAL_APP_ID }}
+          SERVICE_PRINCIPAL_SECRET: ${{ secrets.SERVICE_PRINCIPAL_SECRET }}
+          SERVICE_PRINCIPAL_TENANT: ${{ secrets.SERVICE_PRINCIPAL_TENANT }}
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make registry-login
+      - name: Push image
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make push
+      - name: Get AKS credentials
+        env:
+          CLUSTER_RESOURCE_GROUP_NAME: ${{ secrets.CLUSTER_RESOURCE_GROUP_NAME }}
+          CLUSTER_NAME: ${{ secrets.CLUSTER_NAME }}
+        run: |
+          az aks get-credentials \
+            --resource-group $CLUSTER_RESOURCE_GROUP_NAME \
+            --name $CLUSTER_NAME \
+            --overwrite-existing
+      - name: Deploy application
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make deploy 
+      - name: Create new file and upload it to blob container
+        run: |
+          export AZURE_STORAGE_ACCOUNT=${{ secrets.AZURE_STORAGE_ACCOUNT }}
+          export AZURE_STORAGE_ACCESS_KEY=${{ secrets.AZURE_STORAGE_ACCESS_KEY }}
+          
+          mkdir -p /tmp/buildhelloworld
+          touch /tmp/buildhelloworld/build_number_$(date '+%Y%m%d%H%M%S').txt 
+
+          cd /tmp/buildhelloworld/
+          # Upload sample files to container
+          az storage blob upload-batch -d builds -s . --overwrite
+
+   Job010:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v2
+        with:
+          token: ${{ secrets.MYPAT }}
+      - name: Build image
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make build
+      - name: Login to container registry
+        env:
+          SERVICE_PRINCIPAL_APP_ID: ${{ secrets.SERVICE_PRINCIPAL_APP_ID }}
+          SERVICE_PRINCIPAL_SECRET: ${{ secrets.SERVICE_PRINCIPAL_SECRET }}
+          SERVICE_PRINCIPAL_TENANT: ${{ secrets.SERVICE_PRINCIPAL_TENANT }}
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make registry-login
+      - name: Push image
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make push
+      - name: Get AKS credentials
+        env:
+          CLUSTER_RESOURCE_GROUP_NAME: ${{ secrets.CLUSTER_RESOURCE_GROUP_NAME }}
+          CLUSTER_NAME: ${{ secrets.CLUSTER_NAME }}
+        run: |
+          az aks get-credentials \
+            --resource-group $CLUSTER_RESOURCE_GROUP_NAME \
+            --name $CLUSTER_NAME \
+            --overwrite-existing
+      - name: Deploy application
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make deploy 
+      - name: Create new file and upload it to blob container
+        run: |
+          export AZURE_STORAGE_ACCOUNT=${{ secrets.AZURE_STORAGE_ACCOUNT }}
+          export AZURE_STORAGE_ACCESS_KEY=${{ secrets.AZURE_STORAGE_ACCESS_KEY }}
+          
+          mkdir -p /tmp/buildhelloworld
+          touch /tmp/buildhelloworld/build_number_$(date '+%Y%m%d%H%M%S').txt 
+
+          cd /tmp/buildhelloworld/
+          # Upload sample files to container
+          az storage blob upload-batch -d builds -s . --overwrite
+
+
+   Commit-Next-Loop-Parallel-Jobs:
+    timeout-minutes: 10
+    needs: [Job01,Job02,Job03,Job04,Job05,Job06,Job07,Job08,Job09,Job10]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
