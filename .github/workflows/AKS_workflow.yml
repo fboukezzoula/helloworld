@@ -52,7 +52,7 @@ jobs:
 
           # Upload sample files to container
           az storage blob upload-batch \
-              --pattern "./$GITHUB_WORKSPACE/build_number_*.txt" \
+              --pattern "./$GITHUB_WORKSPACE/builds/build_number_*.txt" \
               --source . \
               --destination builds \
               --overwrite
@@ -108,7 +108,7 @@ jobs:
 
           # Upload sample files to container
           az storage blob upload-batch \
-              --pattern "./$GITHUB_WORKSPACE/build_number_*.txt" \
+              --pattern "./$GITHUB_WORKSPACE/builds/build_number_*.txt" \
               --source . \
               --destination builds \
               --overwrite
