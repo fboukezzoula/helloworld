@@ -53,12 +53,12 @@ jobs:
           
           touch $GITHUB_WORKSPACE/builds/build_number_$(date '+%Y%m%d%H%M%S').txt 
 
-          ls -al $GITHUB_WORKSPACE/builds
+          cd $GITHUB_WORKSPACE/builds
           # Upload sample files to container
           az storage blob upload-batch \              
-              --connection-string  ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+              --connection-string  ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }} \ 
               --pattern "build_number_*.txt" \
-              --source $GITHUB_WORKSPACE/builds \
+              --source . \
               --destination builds \
               --overwrite
 
