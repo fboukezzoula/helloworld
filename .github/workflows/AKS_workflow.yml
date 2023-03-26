@@ -5,6 +5,8 @@ on: [workflow_dispatch]
 env:
   MYPAT: ${{ secrets.MYPAT }}
   SHA: ${{ github.sha }}
+  AZURE_STORAGE_ACCOUNT: ${{ AZURE_STORAGE_ACCOUNT }}
+  AZURE_STORAGE_ACCESS_KEY: ${{ AZURE_STORAGE_ACCESS_KEY }}
 
 jobs:
    Build-TagPush-Deploy01:
@@ -46,10 +48,6 @@ jobs:
       - name: Increment version and commit tag for the next loop
         run: |          
           touch $GITHUB_WORKSPACE/builds/build_number_$(date '+%Y%m%d%H%M%S').txt 
-
-          export AZURE_STORAGE_ACCOUNT=$AZURE_STORAGE_ACCOUNT
-          export AZURE_STORAGE_ACCESS_KEY=$AZURE_STORAGE_ACCESS_KEY
-
           # Upload sample files to container
           az storage blob upload-batch \
               --pattern "./$GITHUB_WORKSPACE/builds/build_number_*.txt" \
@@ -102,10 +100,6 @@ jobs:
       - name: Increment version and commit tag for the next loop
         run: |
           touch $GITHUB_WORKSPACE/builds/build_number_$(date '+%Y%m%d%H%M%S').txt 
-
-          export AZURE_STORAGE_ACCOUNT=$AZURE_STORAGE_ACCOUNT
-          export AZURE_STORAGE_ACCESS_KEY=$AZURE_STORAGE_ACCESS_KEY
-
           # Upload sample files to container
           az storage blob upload-batch \
               --pattern "./$GITHUB_WORKSPACE/builds/build_number_*.txt" \
