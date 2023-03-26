@@ -25,7 +25,8 @@ spec:
           - name: AZURE_STORAGE_CONNECTION_STRING 
             valueFrom: 
               secretKeyRef: 
-                name: connectionstring 
+                name: storageaccount
+                key:  connectionstring
           ports:
           - containerPort: 80
             name: poc-helloworld          
