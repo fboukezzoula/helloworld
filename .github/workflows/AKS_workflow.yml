@@ -1,6 +1,6 @@
 name: HelloWorld Paralell Jobs
 
-on: [workflow_dispatch]
+on: [push,workflow_dispatch]
 
 env:
   MYPAT: ${{ secrets.MYPAT }}
@@ -9,7 +9,7 @@ env:
   AZURE_STORAGE_ACCESS_KEY: ${{ secrets.AZURE_STORAGE_ACCESS_KEY }}
 
 jobs:
-   Build-TagPush-Deploy01:
+   Job01:
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
@@ -56,15 +56,8 @@ jobs:
           cd $GITHUB_WORKSPACE/builds
           # Upload sample files to container
           az storage blob upload-batch -d builds -s . --overwrite
-
-          cd $GITHUB_WORKSPACE     
-          git config user.email "f.boukezzoula@gmail.com" 
-          git config user.name "BOUKEZZOULA Fouzi"
-          git pull 
-          git add . 
-          git commit -m "Launch parallel build-push-deploy jobs" && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git HEAD:main     
                
-   Build-TagPush-Deploy02:
+   Job02:
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
@@ -111,68 +104,7 @@ jobs:
           # Upload sample files to container
           az storage blob upload-batch -d builds -s . --overwrite
 
-          cd $GITHUB_WORKSPACE     
-          git config user.email "f.boukezzoula@gmail.com" 
-          git config user.name "BOUKEZZOULA Fouzi"
-          git pull 
-          git add . 
-          git commit -m "Launch parallel build-push-deploy jobs" && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git HEAD:main  0
-
-   Build-TagPush-Deploy03:
-    timeout-minutes: 10
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v2
-        with:
-          token: ${{ secrets.MYPAT }}
-      - name: Build image
-        env:
-          ACR_NAME: ${{ secrets.ACR_NAME }}
-        run: make build
-      - name: Login to container registry
-        env:
-          SERVICE_PRINCIPAL_APP_ID: ${{ secrets.SERVICE_PRINCIPAL_APP_ID }}
-          SERVICE_PRINCIPAL_SECRET: ${{ secrets.SERVICE_PRINCIPAL_SECRET }}
-          SERVICE_PRINCIPAL_TENANT: ${{ secrets.SERVICE_PRINCIPAL_TENANT }}
-          ACR_NAME: ${{ secrets.ACR_NAME }}
-        run: make registry-login
-      - name: Push image
-        env:
-          ACR_NAME: ${{ secrets.ACR_NAME }}
-        run: make push
-      - name: Get AKS credentials
-        env:
-          CLUSTER_RESOURCE_GROUP_NAME: ${{ secrets.CLUSTER_RESOURCE_GROUP_NAME }}
-          CLUSTER_NAME: ${{ secrets.CLUSTER_NAME }}
-        run: |
-          az aks get-credentials \
-            --resource-group $CLUSTER_RESOURCE_GROUP_NAME \
-            --name $CLUSTER_NAME \
-            --overwrite-existing
-      - name: Deploy application
-        env:
-          ACR_NAME: ${{ secrets.ACR_NAME }}
-        run: make deploy 
-      - name: Increment version and commit tag for the next loop
-        run: |
-          export AZURE_STORAGE_ACCOUNT=${{ secrets.AZURE_STORAGE_ACCOUNT }}
-          export AZURE_STORAGE_ACCESS_KEY=${{ secrets.AZURE_STORAGE_ACCESS_KEY }}
-          
-          touch $GITHUB_WORKSPACE/builds/build_number_$(date '+%Y%m%d%H%M%S').txt 
-
-          cd $GITHUB_WORKSPACE/builds
-          # Upload sample files to container
-          az storage blob upload-batch -d builds -s . --overwrite
-
-          cd $GITHUB_WORKSPACE     
-          git config user.email "f.boukezzoula@gmail.com" 
-          git config user.name "BOUKEZZOULA Fouzi"
-          git pull 
-          git add . 
-          git commit -m "Launch parallel build-push-deploy jobs" && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git HEAD:main 
-
-   Build-TagPush-Deploy04:
+   Job03:
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
@@ -226,7 +158,7 @@ jobs:
           git add . 
           git commit -m "Launch parallel build-push-deploy jobs" && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git HEAD:main 
 
-   Build-TagPush-Deploy05:
+   Job04:
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
@@ -274,6 +206,73 @@ jobs:
           az storage blob upload-batch -d builds -s . --overwrite
 
           cd $GITHUB_WORKSPACE     
+          git config user.email "f.boukezzoula@gmail.com" 
+          git config user.name "BOUKEZZOULA Fouzi"
+          git pull 
+          git add . 
+          git commit -m "Launch parallel build-push-deploy jobs" && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git HEAD:main 
+
+   Job05:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v2
+        with:
+          token: ${{ secrets.MYPAT }}
+      - name: Build image
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make build
+      - name: Login to container registry
+        env:
+          SERVICE_PRINCIPAL_APP_ID: ${{ secrets.SERVICE_PRINCIPAL_APP_ID }}
+          SERVICE_PRINCIPAL_SECRET: ${{ secrets.SERVICE_PRINCIPAL_SECRET }}
+          SERVICE_PRINCIPAL_TENANT: ${{ secrets.SERVICE_PRINCIPAL_TENANT }}
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make registry-login
+      - name: Push image
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make push
+      - name: Get AKS credentials
+        env:
+          CLUSTER_RESOURCE_GROUP_NAME: ${{ secrets.CLUSTER_RESOURCE_GROUP_NAME }}
+          CLUSTER_NAME: ${{ secrets.CLUSTER_NAME }}
+        run: |
+          az aks get-credentials \
+            --resource-group $CLUSTER_RESOURCE_GROUP_NAME \
+            --name $CLUSTER_NAME \
+            --overwrite-existing
+      - name: Deploy application
+        env:
+          ACR_NAME: ${{ secrets.ACR_NAME }}
+        run: make deploy 
+      - name: Increment version and commit tag for the next loop
+        run: |
+          export AZURE_STORAGE_ACCOUNT=${{ secrets.AZURE_STORAGE_ACCOUNT }}
+          export AZURE_STORAGE_ACCESS_KEY=${{ secrets.AZURE_STORAGE_ACCESS_KEY }}
+          
+          touch $GITHUB_WORKSPACE/builds/build_number_$(date '+%Y%m%d%H%M%S').txt 
+
+          cd $GITHUB_WORKSPACE/builds
+          # Upload sample files to container
+          az storage blob upload-batch -d builds -s . --overwrite
+
+  Commit-Next-Loop:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    needs: [Job01,Job02,Job03,Job04,Job05]
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v2
+        with:
+          token: ${{ secrets.MYPAT }}
+      - name: Commit for triggering next parallel jobs
+        run: |
+          cd $GITHUB_WORKSPACE     
+          version=$(cat ./version) 
+          echo "$(($version+1))" > ./version 
           git config user.email "f.boukezzoula@gmail.com" 
           git config user.name "BOUKEZZOULA Fouzi"
           git pull 
