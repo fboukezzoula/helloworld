@@ -5,6 +5,8 @@ on: [push,workflow_dispatch]
 env:
   MYPAT: ${{ secrets.MYPAT }}
   SHA: ${{ github.sha }}
+  AZURE_STORAGE_CONTAINER_NAME: ${{ AZURE_STORAGE_CONTAINER_NAME }}
+  AZURE_STORAGE_CONNECTION_STRING: ${{ AZURE_STORAGE_CONNECTION_STRING }}
 
 jobs:
    Build-TagPush-Deploy01:
@@ -46,12 +48,22 @@ jobs:
       - name: Increment version and commit tag for the next loop
         run: |
           cd $GITHUB_WORKSPACE 
-          cat ./deployment.yaml 
           touch $GITHUB_WORKSPACE/builds/build_number_$(date '+%Y%m%d%H%M%S').txt 
+
+          export AZURE_STORAGE_ACCOUNT=$AZURE_STORAGE_ACCOUNT
+          export AZURE_STORAGE_ACCESS_KEY=$AZURE_STORAGE_ACCESS_KEY
+
+          # Upload sample files to container
+          az storage blob upload-batch \
+              --pattern "build_number_*.txt" \
+              --source . \
+              --destination builds \
+              --overwrite
+              
           git config user.email "f.boukezzoula@gmail.com" 
           git config user.name "BOUKEZZOULA Fouzi"
           git pull && git add . 
-          git commit -m "Launch parallel build-push-deploy jobs" && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git HEAD:main   
+          git commit -m "Launch parallel build-push-deploy jobs" && git push https://$MYPAT@github.com/fboukezzoula/helloworld.git HEAD:main     
                
    Build-TagPush-Deploy02:
     timeout-minutes: 10
@@ -92,8 +104,18 @@ jobs:
       - name: Increment version and commit tag for the next loop
         run: |
           cd $GITHUB_WORKSPACE 
-          cat ./deployment.yaml 
           touch $GITHUB_WORKSPACE/builds/build_number_$(date '+%Y%m%d%H%M%S').txt 
+
+          export AZURE_STORAGE_ACCOUNT=$AZURE_STORAGE_ACCOUNT
+          export AZURE_STORAGE_ACCESS_KEY=$AZURE_STORAGE_ACCESS_KEY
+
+          # Upload sample files to container
+          az storage blob upload-batch \
+              --pattern "build_number_*.txt" \
+              --source . \
+              --destination builds \
+              --overwrite
+
           git config user.email "f.boukezzoula@gmail.com" 
           git config user.name "BOUKEZZOULA Fouzi"
           git pull && git add . 
