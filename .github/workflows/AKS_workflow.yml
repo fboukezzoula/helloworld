@@ -64,10 +64,10 @@ jobs:
           az storage blob upload-batch -d showcase -s . --overwrite
       - name: Launch the workflow with API
         run: |
-        curl \
-          -X POST \
-          --header 'authorization: Bearer $MYPAT' \
-          -H "Accept: application/vnd.github.v3+json" \
-          https://api.github.com/repos/fboukezzoula/helloworl/actions/workflows/AKS_workflow.yml/dispatches \
-          -d '{"ref":"main", "inputs": { "name":""}}'
+          curl \
+            -X POST \
+            --header 'authorization: Bearer $MYPAT' \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/fboukezzoula/helloworl/actions/workflows/AKS_workflow.yml/dispatches \
+            -d '{"ref":"main", "inputs": { "name":""}}'
 
