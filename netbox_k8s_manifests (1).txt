@@ -1,0 +1,572 @@
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: netbox
+
+---
+# ConfigMaps pour les variables d'environnement
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: netbox-config
+  namespace: netbox
+data:
+  CORS_ORIGIN_ALLOW_ALL: "True"
+  DB_HOST: postgres
+  DB_NAME: netbox
+  DB_USER: netbox
+  EMAIL_FROM: netbox@bar.com
+  EMAIL_PASSWORD: ""
+  EMAIL_PORT: "25"
+  EMAIL_SERVER: localhost
+  EMAIL_SSL_CERTFILE: ""
+  EMAIL_SSL_KEYFILE: ""
+  EMAIL_TIMEOUT: "5"
+  EMAIL_USERNAME: netbox
+  EMAIL_USE_SSL: "false"
+  EMAIL_USE_TLS: "false"
+  GRAPHQL_ENABLED: "true"
+  HOUSEKEEPING_INTERVAL: "86400"
+  MEDIA_ROOT: /opt/netbox/netbox/media
+  METRICS_ENABLED: "false"
+  REDIS_CACHE_DATABASE: "1"
+  REDIS_CACHE_HOST: redis-cache
+  REDIS_CACHE_INSECURE_SKIP_TLS_VERIFY: "false"
+  REDIS_CACHE_SSL: "false"
+  REDIS_DATABASE: "0"
+  REDIS_HOST: redis
+  REDIS_INSECURE_SKIP_TLS_VERIFY: "false"
+  REDIS_SSL: "false"
+  RELEASE_CHECK_URL: https://api.github.com/repos/netbox-community/netbox/releases
+  SKIP_SUPERUSER: "true"
+  WEBHOOKS_ENABLED: "true"
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-config
+  namespace: netbox
+data:
+  POSTGRES_DB: netbox
+  POSTGRES_USER: netbox
+
+---
+# Secrets pour les mots de passe
+apiVersion: v1
+kind: Secret
+metadata:
+  name: netbox-secrets
+  namespace: netbox
+type: Opaque
+data:
+  # Mots de passe encodés en base64 depuis les fichiers .env
+  DB_PASSWORD: SjVickhhWEZMUVNpZjBL  # J5brHrAXFLQSif0K
+  POSTGRES_PASSWORD: SjVickhhWEZMUVNpZjBL  # J5brHrAXFLQSif0K
+  REDIS_PASSWORD: SDczM0tkanNka3M4MQ==  # H733Kdjndks81
+  REDIS_CACHE_PASSWORD: dDRQaDcyMnFKNVFIZVExcWZ1MzY=  # t4Ph722qJ5QHeQ1qfu36
+  SECRET_KEY: cigibSk5bkxHbnonKF9xM040ejFrKEVGc01DampmengwOHg5VmhOVmNmZCU2UkYjciE2RUVAK1Y1WmsyWA==  # r(m)9nLGnz$(_q3N4z1k(EFsMCjjjzx08x9VhNVcfd%6RF#r!6DE@+V5Zk2X
+
+---
+# PersistentVolumes
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: netbox
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-pvc
+  namespace: netbox
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-cache-pvc
+  namespace: netbox
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: netbox-media-pvc
+  namespace: netbox
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: netbox-reports-pvc
+  namespace: netbox
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: netbox-scripts-pvc
+  namespace: netbox
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+# PostgreSQL Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: netbox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+      - name: postgres
+        image: postgres:17-alpine
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+        envFrom:
+        - configMapRef:
+            name: postgres-config
+        - secretRef:
+            name: netbox-secrets
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        - name: postgres-tmp
+          mountPath: /tmp
+        - name: postgres-run
+          mountPath: /var/run/postgresql
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -q
+            - -t
+            - "2"
+            - -d
+            - $(POSTGRES_DB)
+            - -U
+            - $(POSTGRES_USER)
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 30
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+      - name: postgres-tmp
+        emptyDir: {}
+      - name: postgres-run
+        emptyDir: {}
+
+---
+# PostgreSQL Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: netbox
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+
+---
+# Redis Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: netbox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+      - name: redis
+        image: valkey/valkey:8.1-alpine
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+        command:
+        - sh
+        - -c
+        - valkey-server --appendonly yes --requirepass $REDIS_PASSWORD
+        env:
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: netbox-secrets
+              key: REDIS_PASSWORD
+        ports:
+        - containerPort: 6379
+        volumeMounts:
+        - name: redis-storage
+          mountPath: /data
+        - name: redis-tmp
+          mountPath: /tmp
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - '[ $(valkey-cli --pass "$REDIS_PASSWORD" ping) = "PONG" ]'
+          initialDelaySeconds: 5
+          periodSeconds: 1
+          timeoutSeconds: 3
+      volumes:
+      - name: redis-storage
+        persistentVolumeClaim:
+          claimName: redis-pvc
+      - name: redis-tmp
+        emptyDir: {}
+
+---
+# Redis Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: netbox
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+
+---
+# Redis Cache Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-cache
+  namespace: netbox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-cache
+  template:
+    metadata:
+      labels:
+        app: redis-cache
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+      - name: redis-cache
+        image: valkey/valkey:8.1-alpine
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+        command:
+        - sh
+        - -c
+        - valkey-server --requirepass $REDIS_CACHE_PASSWORD
+        env:
+        - name: REDIS_CACHE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: netbox-secrets
+              key: REDIS_CACHE_PASSWORD
+        ports:
+        - containerPort: 6379
+        volumeMounts:
+        - name: redis-cache-storage
+          mountPath: /data
+        - name: redis-cache-tmp
+          mountPath: /tmp
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - '[ $(valkey-cli --pass "$REDIS_CACHE_PASSWORD" ping) = "PONG" ]'
+          initialDelaySeconds: 5
+          periodSeconds: 1
+          timeoutSeconds: 3
+      volumes:
+      - name: redis-cache-storage
+        persistentVolumeClaim:
+          claimName: redis-cache-pvc
+      - name: redis-cache-tmp
+        emptyDir: {}
+
+---
+# Redis Cache Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-cache
+  namespace: netbox
+spec:
+  selector:
+    app: redis-cache
+  ports:
+  - port: 6379
+    targetPort: 6379
+
+---
+# NetBox Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netbox
+  namespace: netbox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: netbox
+  template:
+    metadata:
+      labels:
+        app: netbox
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+      - name: netbox
+        image: netboxcommunity/netbox:v4.3-3.3.0
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+        envFrom:
+        - configMapRef:
+            name: netbox-config
+        - secretRef:
+            name: netbox-secrets
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: netbox-media
+          mountPath: /opt/netbox/netbox/media
+        - name: netbox-reports
+          mountPath: /opt/netbox/netbox/reports
+        - name: netbox-scripts
+          mountPath: /opt/netbox/netbox/scripts
+        - name: netbox-tmp
+          mountPath: /tmp
+        livenessProbe:
+          httpGet:
+            path: /login/
+            port: 8080
+          initialDelaySeconds: 90
+          periodSeconds: 15
+          timeoutSeconds: 3
+        readinessProbe:
+          httpGet:
+            path: /login/
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+      volumes:
+      - name: netbox-media
+        persistentVolumeClaim:
+          claimName: netbox-media-pvc
+      - name: netbox-reports
+        persistentVolumeClaim:
+          claimName: netbox-reports-pvc
+      - name: netbox-scripts
+        persistentVolumeClaim:
+          claimName: netbox-scripts-pvc
+      - name: netbox-tmp
+        emptyDir: {}
+
+---
+# NetBox Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: netbox
+  namespace: netbox
+spec:
+  selector:
+    app: netbox
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: LoadBalancer
+
+---
+# NetBox Worker Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netbox-worker
+  namespace: netbox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: netbox-worker
+  template:
+    metadata:
+      labels:
+        app: netbox-worker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+      - name: netbox-worker
+        image: netboxcommunity/netbox:v4.3-3.3.0
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+        command:
+        - /opt/netbox/venv/bin/python
+        - /opt/netbox/netbox/manage.py
+        - rqworker
+        envFrom:
+        - configMapRef:
+            name: netbox-config
+        - secretRef:
+            name: netbox-secrets
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - ps -aux | grep -v grep | grep -q rqworker
+          initialDelaySeconds: 20
+          periodSeconds: 15
+          timeoutSeconds: 3
+
+---
+# NetBox Housekeeping Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: netbox-housekeeping
+  namespace: netbox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: netbox-housekeeping
+  template:
+    metadata:
+      labels:
+        app: netbox-housekeeping
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+      - name: netbox-housekeeping
+        image: netboxcommunity/netbox:v4.3-3.3.0
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+            - ALL
+        command:
+        - /opt/netbox/housekeeping.sh
+        envFrom:
+        - configMapRef:
+            name: netbox-config
+        - secretRef:
+            name: netbox-secrets
+        livenessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - ps -aux | grep -v grep | grep -q housekeeping
+          initialDelaySeconds: 20
+          periodSeconds: 15
+          timeoutSeconds: 3
