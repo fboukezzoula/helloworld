@@ -1,74 +1,82 @@
-Merci pour les précisions ! Je vois mieux ce que tu veux faire. Tu as donc un **hub and spoke**, avec deux **ExpressRoute** (ER) différents et tu souhaites configurer des **UDR (User Defined Routes)** dans le **GatewaySubnet** du VNet du hub pour router le trafic entre les VNets spoke et les différentes passerelles ExpressRoute.
-
-### Objectif :
-
-Configurer des **UDR** sur ton **GatewaySubnet** du hub, de façon à ce que le trafic entre chaque spoke (Spoke 1 et Spoke 2) prenne la passerelle et le circuit ExpressRoute appropriés :
-
-* **Spoke 1** avec **IP 1** passe par **VirtualGateway 1** et **ExpressRoute 1**.
-* **Spoke 2** avec **IP 2** passe par **VirtualGateway 2** et **ExpressRoute 2**.
-
-### Étapes à suivre :
-
-#### 1. **Configurer les UDR dans le GatewaySubnet du Hub**
-
-Tu auras besoin de définir des **User Defined Routes** (UDR) dans le **GatewaySubnet** pour contrôler explicitement la route que le trafic doit suivre en fonction de l'adresse IP source. Ces UDR seront appliquées au **VNet Gateway** du hub et détermineront quel circuit ExpressRoute utiliser pour le trafic sortant vers les VNets spoke.
-
-Les étapes de base seraient :
-
-* Créer deux **routes statiques** dans la table de routage de **GatewaySubnet** du hub.
-
-* La route 1 pour **Spoke 1** (adresse IP 1) :
-
-  * **Destination :** Plage d'adresses IP de Spoke 1 (par exemple `10.1.0.0/16` si c'est la plage IP de Spoke 1)
-  * **Next Hop :** Virtual Gateway associé à **ExpressRoute 1**
-
-* La route 2 pour **Spoke 2** (adresse IP 2) :
-
-  * **Destination :** Plage d'adresses IP de Spoke 2 (par exemple `10.2.0.0/16` si c'est la plage IP de Spoke 2)
-  * **Next Hop :** Virtual Gateway associé à **ExpressRoute 2**
-
-#### Exemple des routes :
-
-1. Route pour Spoke 1 (en supposant que Spoke 1 a l'adresse `10.1.0.0/16` et que tu veux utiliser ER1) :
-
-   ```
-   Destination : 10.1.0.0/16
-   Next Hop : Virtual Gateway 1 (associé à ExpressRoute 1)
-   ```
-
-2. Route pour Spoke 2 (en supposant que Spoke 2 a l'adresse `10.2.0.0/16` et que tu veux utiliser ER2) :
-
-   ```
-   Destination : 10.2.0.0/16
-   Next Hop : Virtual Gateway 2 (associé à ExpressRoute 2)
-   ```
-
-#### 2. **Configurer le routage BGP pour la redondance (si nécessaire)**
-
-Si tu souhaites assurer une haute disponibilité, tu pourrais configurer un **BGP (Border Gateway Protocol)** entre ton **Virtual Network Gateway** et les **ExpressRoute Gateways**. Cela permettrait à Azure de sélectionner automatiquement le chemin optimal en cas de défaillance du circuit principal. Tu définiras des **préfixes** pour les deux circuits ER et leurs **priorités BGP** pour gérer le basculement.
-
-Dans ce cas :
-
-* Les **prefixes BGP** seront échangés entre ton **VNet Gateway** (hub) et les passerelles **ExpressRoute 1** et **ExpressRoute 2**.
-* Si un circuit ExpressRoute échoue, **BGP** basculera automatiquement le trafic vers l'autre circuit, en fonction de la métrique de priorité définie.
-
-#### 3. **Vérification du routage sur les Spokes**
-
-Après avoir mis en place les UDR dans le **GatewaySubnet** du hub, il faudra s'assurer que les **tables de routage des VNets spokes** sont correctes pour permettre au trafic d'atteindre le **VNet Gateway du hub**. Les **spokes** doivent avoir une route par défaut qui pointe vers le **VNet du hub**, donc :
-
-* Dans les tables de routage des **spokes**, une **route par défaut** (0.0.0.0/0) devra pointer vers le **GatewaySubnet du hub** (ou son adresse IP de passerelle).
-* Si des règles de sécurité (NSG) ou des pare-feux sont en place, il faudra aussi vérifier que les flux sont autorisés entre les spokes et le hub.
-
-#### 4. **Tester la connectivité**
-
-Une fois tout configuré, tu peux tester la connectivité en envoyant du trafic entre les **spokes** et en vérifiant les chemins empruntés via les logs de **Network Watcher** ou les **logs de diagnostic** d'Azure Firewall. Cela te permettra de vérifier si le trafic suit bien les routes que tu as définies.
 
 ---
 
-### À retenir :
+## 🔧 Step-by-Step Plan
 
-* **User Defined Routes** (UDR) dans le **GatewaySubnet** du hub pour diriger le trafic entre les VNets spoke et les circuits ExpressRoute appropriés.
-* Configuration de **BGP** pour la redondance et le basculement automatique en cas de défaillance d'un circuit.
-* Mise à jour des **tables de routage** des **spokes** pour garantir la bonne direction du trafic vers le hub.
+### 1. Configure Spoke Route Tables
 
-Si tu as d’autres questions ou besoin de précisions sur une étape spécifique, je suis là pour t’aider !
+Each **Spoke subnet** should have a custom UDR:
+
+| Route | Value |
+|-------|-------|
+| Destination | `0.0.0.0/0` |
+| Next Hop | Azure Firewall private IP |
+
+Attach this route table to each workload subnet in both Spoke 1 and Spoke 2.
+
+---
+
+### 2. Azure Firewall SNAT Configuration
+
+Configure Azure Firewall to **SNAT Spoke traffic to different IPs**, so that your **on-premises edge router** can distinguish the traffic:
+
+| Traffic Source | SNAT to |
+|----------------|---------|
+| Spoke 1        | `10.0.0.10` (Firewall IP A) |
+| Spoke 2        | `10.0.0.20` (Firewall IP B) |
+
+> These are outbound SNAT IPs that your **edge router will use to apply policy routing**.
+
+You can define SNAT rules in the **Azure Firewall Policy**, or rely on default SNAT behavior with custom IPs per spoke using IP groups.
+
+---
+
+### 3. On-Premises Edge Router Policy Routing
+
+At your on-prem router where both **ExpressRoute circuits terminate**:
+
+- If source = `10.0.0.10` → route via **ExpressRoute 1**
+- If source = `10.0.0.20` → route via **ExpressRoute 2**
+
+This enables **source-based routing**, even though Azure itself can't do that internally.
+
+---
+
+### 4. BGP + ExpressRoute Global Reach (Optional)
+
+If you're using **ExpressRoute Global Reach**:
+
+- Enable it between ER1 and ER2
+- This allows your **Hub to reach both circuits** via your on-prem environment
+
+This way, you can have **one VNet Gateway in the Hub**, but send traffic to either circuit by letting **on-prem handle the path**.
+
+---
+
+## ✅ Summary
+
+| Requirement | Solution |
+|-------------|----------|
+| Centralized firewall | Azure Firewall in the Hub |
+| Different egress ER paths | Handle using SNAT + on-prem routing |
+| Single Hub VNet | Supported |
+| Multiple ER circuits | Handled at edge (not within single VNet) |
+| Spoke-level control | Done via route tables + Firewall SNAT |
+| Source-based routing | Done outside Azure (on-premises) |
+
+---
+
+## 📌 Notes
+
+- **Monitor effective routes** with **Azure Network Watcher** to verify UDRs and next hops.
+- Ensure **NSGs allow** all required traffic between spokes, Hub, and ExpressRoute Gateways.
+- Consider using **Azure Route Server** + **BGP** in advanced designs with NVAs.
+
+---
+
+## 🧪 Validation
+
+- Use **Network Watcher > IP Flow Verify** to check traffic flow
+- Enable **Azure Firewall diagnostic logs** to confirm SNAT behavior
+- On on-prem routers, check flow logs to confirm source IP-based routing is applied as expected
+
