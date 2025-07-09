@@ -1,0 +1,155 @@
+#!/bin/bash
+
+# Create directory
+mkdir -p netbox-azure-bootstrap
+cd netbox-azure-bootstrap
+
+# README.md
+cat <<'EOF' > README.md
+# NetBox Azure Bootstrap Scripts
+
+This package helps you extract Azure subscription and network information, and push it into NetBox.
+
+## Scripts
+
+- `azure_to_netbox_sites.sh` — Creates NetBox Sites for each Azure subscription (including subscription ID in a custom field).
+- `azure_to_netbox_prefixes.sh` — Pushes all Azure VNet prefixes into NetBox, attached to the correct site.
+- `bulk_create_aggregates.sh` — Bulk import IP aggregates from a CSV into NetBox.
+
+## Usage
+
+1. Edit each script to set your NetBox URL and API token.
+2. Ensure you have `az`, `jq`, and `curl` installed and authenticated.
+3. Run scripts as needed.
+
+See each script for details.
+EOF
+
+# azure_to_netbox_sites.sh
+cat <<'EOF' > azure_to_netbox_sites.sh
+#!/bin/bash
+
+NETBOX_URL="https://your-netbox-instance/api"
+NETBOX_TOKEN="YOUR_NETBOX_API_TOKEN"
+
+# Helper function to POST to NetBox
+netbox_post() {
+    local endpoint="$1"
+    local data="$2"
+    curl -s -X POST "${NETBOX_URL}${endpoint}/" \
+        -H "Authorization: Token ${NETBOX_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "${data}"
+}
+
+for SUB in $(az account list --all --query '[].id' -o tsv); do
+    az account set --subscription "$SUB"
+    SUB_NAME=$(az account show --query 'name' -o tsv)
+    SITE_SLUG=$(echo "$SUB_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+
+    # Build the JSON payload with custom field for subscription ID
+    SITE_DATA=$(jq -n \
+      --arg name "$SUB_NAME" \
+      --arg slug "$SITE_SLUG" \
+      --arg subid "$SUB" \
+      '{name: $name, slug: $slug, custom_fields: {azure_subscription_id: $subid}}'
+    )
+
+    netbox_post "/dcim/sites" "$SITE_DATA"
+    echo "Added site: $SUB_NAME ($SUB)"
+done
+EOF
+
+# azure_to_netbox_prefixes.sh
+cat <<'EOF' > azure_to_netbox_prefixes.sh
+#!/bin/bash
+
+NETBOX_URL="https://your-netbox-instance/api"
+NETBOX_TOKEN="YOUR_NETBOX_API_TOKEN"
+
+netbox_post() {
+    local endpoint="$1"
+    local data="$2"
+    curl -s -X POST "${NETBOX_URL}${endpoint}/" \
+        -H "Authorization: Token ${NETBOX_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "${data}"
+}
+
+for SUB_ID in $(az account list --all --query '[].id' -o tsv); do
+  az account set --subscription "$SUB_ID"
+  SUB_NAME=$(az account show --query 'name' -o tsv)
+  SITE_SLUG=$(echo "$SUB_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+
+  # Fetch the Site ID by slug
+  SITE_ID=$(curl -s -X GET "${NETBOX_URL}/dcim/sites/?slug=$SITE_SLUG" \
+              -H "Authorization: Token ${NETBOX_TOKEN}" | jq '.results[0].id')
+
+  for VNET in $(az network vnet list --query '[].id' -o tsv); do
+    VNET_JSON=$(az network vnet show --ids "$VNET")
+    VNET_NAME=$(echo "$VNET_JSON" | jq -r '.name')
+    for PREFIX in $(echo "$VNET_JSON" | jq -r '.addressSpace.addressPrefixes[]'); do
+      PREFIX_DATA="{\"prefix\": \"$PREFIX\", \"site\": $SITE_ID, \"description\": \"VNet $VNET_NAME in $SUB_NAME\"}"
+      netbox_post "/ipam/prefixes" "$PREFIX_DATA"
+    done
+  done
+done
+EOF
+
+# bulk_create_aggregates.sh
+cat <<'EOF' > bulk_create_aggregates.sh
+#!/bin/bash
+
+NETBOX_URL="https://your-netbox-instance/api"
+NETBOX_TOKEN="YOUR_NETBOX_API_TOKEN"
+CSV_FILE="aggregates.csv"
+
+# Helper to get RIR ID by slug
+get_rir_id() {
+    local slug=$1
+    curl -s -H "Authorization: Token $NETBOX_TOKEN" "$NETBOX_URL/ipam/rirs/?slug=$slug" | jq '.results[0].id'
+}
+
+while IFS=, read -r prefix rir_slug; do
+    # Skip header
+    if [[ "$prefix" == "prefix" ]]; then continue; fi
+
+    rir_id=$(get_rir_id "$rir_slug")
+    if [[ -z "$rir_id" || "$rir_id" == "null" ]]; then
+        echo "RIR not found for slug $rir_slug, skipping $prefix"
+        continue
+    fi
+
+    data="{\"prefix\": \"$prefix\", \"rir\": $rir_id}"
+    curl -s -X POST "$NETBOX_URL/ipam/aggregates/" \
+        -H "Authorization: Token $NETBOX_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "$data"
+    echo "Created aggregate $prefix (RIR: $rir_slug)"
+done < "$CSV_FILE"
+EOF
+
+# aggregates.csv
+cat <<'EOF' > aggregates.csv
+prefix,rir_slug
+10.0.0.0/8,rfc1918
+172.16.0.0/12,rfc1918
+192.168.0.0/16,rfc1918
+EOF
+
+# notifications.txt
+cat <<'EOF' > notifications.txt
+- Make sure you have 'azure_subscription_id' custom field created in NetBox for Sites.
+- Scripts require az, jq, and curl.
+- For large tenants, consider running scripts during off-hours.
+- Review NetBox API permissions.
+EOF
+
+# Make scripts executable
+chmod +x *.sh
+
+# Go up, zip the folder
+cd ..
+zip -r netbox-azure-bootstrap.zip netbox-azure-bootstrap
+
+echo "All done! Your netbox-azure-bootstrap.zip is ready."
