@@ -1,415 +1,325 @@
-Voici vos manifests Kubernetes pour NetBox.
-Points clés :
+1. Create a Custom Field in NetBox (for Subscription ID)
+Before running your script, in the NetBox admin UI:
 
-ConfigMaps et Secrets pour les variables d'environnement
-PVCs pour le stockage persistant
-Services pour l'exposition des ports
-Deployments pour chaque composant
-
-À configurer avant déploiement :
-
-Modifier les mots de passe dans le Secret (encoder en base64)
-Ajuster les variables NetBox dans la ConfigMap
-Adapter les tailles de stockage selon vos besoins
-
-Déploiement :
-bashkubectl apply -f netbox-manifests.yaml
-Le service NetBox sera accessible via LoadBalancer sur le port 8080.
+Go to Admin → Extras → Custom Fields
+Add a custom field (e.g., azure_subscription_id) for the Site model.
 
 
 
 
 
-# ConfigMaps pour les variables d'environnement
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: netbox-config
-data:
-  # Ajouter vos variables NetBox ici
-  NETBOX_DB_HOST: postgres
-  NETBOX_REDIS_HOST: redis
-  NETBOX_REDIS_CACHE_HOST: redis-cache
 
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: postgres-config
-data:
-  POSTGRES_DB: netbox
-  POSTGRES_USER: netbox
 
----
-# Secrets pour les mots de passe
-apiVersion: v1
-kind: Secret
-metadata:
-  name: netbox-secrets
-type: Opaque
-data:
-  # Encoder en base64: echo -n 'your-password' | base64
-  POSTGRES_PASSWORD: cG9zdGdyZXMtcGFzcw==
-  REDIS_PASSWORD: cmVkaXMtcGFzcw==
 
----
-# PersistentVolumes
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: postgres-pvc
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 10Gi
 
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: redis-pvc
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 1Gi
 
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: redis-cache-pvc
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 1Gi
 
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: netbox-media-pvc
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 5Gi
 
----
-# PostgreSQL Deployment
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: postgres
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: postgres
-  template:
-    metadata:
-      labels:
-        app: postgres
-    spec:
-      containers:
-      - name: postgres
-        image: postgres:17-alpine
-        envFrom:
-        - configMapRef:
-            name: postgres-config
-        - secretRef:
-            name: netbox-secrets
-        ports:
-        - containerPort: 5432
-        volumeMounts:
-        - name: postgres-storage
-          mountPath: /var/lib/postgresql/data
-        livenessProbe:
-          exec:
-            command:
-            - pg_isready
-            - -q
-            - -t
-            - "2"
-            - -d
-            - $(POSTGRES_DB)
-            - -U
-            - $(POSTGRES_USER)
-          initialDelaySeconds: 20
-          periodSeconds: 10
-          timeoutSeconds: 30
-      volumes:
-      - name: postgres-storage
-        persistentVolumeClaim:
-          claimName: postgres-pvc
 
----
-# PostgreSQL Service
-apiVersion: v1
-kind: Service
-metadata:
-  name: postgres
-spec:
-  selector:
-    app: postgres
-  ports:
-  - port: 5432
-    targetPort: 5432
 
----
-# Redis Deployment
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: redis
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: redis
-  template:
-    metadata:
-      labels:
-        app: redis
-    spec:
-      containers:
-      - name: redis
-        image: valkey/valkey:8.1-alpine
-        command:
-        - sh
-        - -c
-        - valkey-server --appendonly yes --requirepass $REDIS_PASSWORD
-        envFrom:
-        - secretRef:
-            name: netbox-secrets
-        ports:
-        - containerPort: 6379
-        volumeMounts:
-        - name: redis-storage
-          mountPath: /data
-        livenessProbe:
-          exec:
-            command:
-            - sh
-            - -c
-            - '[ $(valkey-cli --pass "$REDIS_PASSWORD" ping) = "PONG" ]'
-          initialDelaySeconds: 5
-          periodSeconds: 1
-          timeoutSeconds: 3
-      volumes:
-      - name: redis-storage
-        persistentVolumeClaim:
-          claimName: redis-pvc
 
----
-# Redis Service
-apiVersion: v1
-kind: Service
-metadata:
-  name: redis
-spec:
-  selector:
-    app: redis
-  ports:
-  - port: 6379
-    targetPort: 6379
 
----
-# Redis Cache Deployment
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: redis-cache
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: redis-cache
-  template:
-    metadata:
-      labels:
-        app: redis-cache
-    spec:
-      containers:
-      - name: redis-cache
-        image: valkey/valkey:8.1-alpine
-        command:
-        - sh
-        - -c
-        - valkey-server --requirepass $REDIS_PASSWORD
-        envFrom:
-        - secretRef:
-            name: netbox-secrets
-        ports:
-        - containerPort: 6379
-        volumeMounts:
-        - name: redis-cache-storage
-          mountPath: /data
-        livenessProbe:
-          exec:
-            command:
-            - sh
-            - -c
-            - '[ $(valkey-cli --pass "$REDIS_PASSWORD" ping) = "PONG" ]'
-          initialDelaySeconds: 5
-          periodSeconds: 1
-          timeoutSeconds: 3
-      volumes:
-      - name: redis-cache-storage
-        persistentVolumeClaim:
-          claimName: redis-cache-pvc
 
----
-# Redis Cache Service
-apiVersion: v1
-kind: Service
-metadata:
-  name: redis-cache
-spec:
-  selector:
-    app: redis-cache
-  ports:
-  - port: 6379
-    targetPort: 6379
 
----
-# NetBox Deployment
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: netbox
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: netbox
-  template:
-    metadata:
-      labels:
-        app: netbox
-    spec:
-      containers:
-      - name: netbox
-        image: netboxcommunity/netbox:v4.3-3.3.0
-        envFrom:
-        - configMapRef:
-            name: netbox-config
-        - secretRef:
-            name: netbox-secrets
-        ports:
-        - containerPort: 8080
-        volumeMounts:
-        - name: netbox-media
-          mountPath: /opt/netbox/netbox/media
-        livenessProbe:
-          httpGet:
-            path: /login/
-            port: 8080
-          initialDelaySeconds: 90
-          periodSeconds: 15
-          timeoutSeconds: 3
-        readinessProbe:
-          httpGet:
-            path: /login/
-            port: 8080
-          initialDelaySeconds: 30
-          periodSeconds: 10
-      volumes:
-      - name: netbox-media
-        persistentVolumeClaim:
-          claimName: netbox-media-pvc
 
----
-# NetBox Service
-apiVersion: v1
-kind: Service
-metadata:
-  name: netbox
-spec:
-  selector:
-    app: netbox
-  ports:
-  - port: 8080
-    targetPort: 8080
-  type: LoadBalancer
 
----
-# NetBox Worker Deployment
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: netbox-worker
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: netbox-worker
-  template:
-    metadata:
-      labels:
-        app: netbox-worker
-    spec:
-      containers:
-      - name: netbox-worker
-        image: netboxcommunity/netbox:v4.3-3.3.0
-        command:
-        - /opt/netbox/venv/bin/python
-        - /opt/netbox/netbox/manage.py
-        - rqworker
-        envFrom:
-        - configMapRef:
-            name: netbox-config
-        - secretRef:
-            name: netbox-secrets
-        livenessProbe:
-          exec:
-            command:
-            - sh
-            - -c
-            - ps -aux | grep -v grep | grep -q rqworker
-          initialDelaySeconds: 20
-          periodSeconds: 15
-          timeoutSeconds: 3
 
----
-# NetBox Housekeeping Deployment
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: netbox-housekeeping
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: netbox-housekeeping
-  template:
-    metadata:
-      labels:
-        app: netbox-housekeeping
-    spec:
-      containers:
-      - name: netbox-housekeeping
-        image: netboxcommunity/netbox:v4.3-3.3.0
-        command:
-        - /opt/netbox/housekeeping.sh
-        envFrom:
-        - configMapRef:
-            name: netbox-config
-        - secretRef:
-            name: netbox-secrets
-        livenessProbe:
-          exec:
-            command:
-            - sh
-            - -c
-            - ps -aux | grep -v grep | grep -q housekeeping
-          initialDelaySeconds: 20
-          periodSeconds: 15
-          timeoutSeconds: 3
+
+
+
+
+1. Create a Custom Field in NetBox (for Subscription ID)
+Before running your script, in the NetBox admin UI:
+
+Go to Admin → Extras → Custom Fields
+Add a custom field (e.g., azure_subscription_id) for the Site model.
+2. Bash Script to Bulk-Add Sites with Name and Subscription ID
+Below is a script to create Sites in NetBox with the Azure subscription name and the subscription ID stored in a custom field.
+
+bash
+#!/bin/bash
+
+NETBOX_URL="https://your-netbox-instance/api"
+NETBOX_TOKEN="YOUR_NETBOX_API_TOKEN"
+
+# Helper function to POST to NetBox
+netbox_post() {
+    local endpoint="$1"
+    local data="$2"
+    curl -s -X POST "${NETBOX_URL}${endpoint}/" \
+        -H "Authorization: Token ${NETBOX_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "${data}"
+}
+
+for SUB in $(az account list --all --query '[].id' -o tsv); do
+    az account set --subscription "$SUB"
+    SUB_NAME=$(az account show --query 'name' -o tsv)
+    SITE_SLUG=$(echo "$SUB_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+
+    # Build the JSON payload with custom field for subscription ID
+    SITE_DATA=$(jq -n \
+      --arg name "$SUB_NAME" \
+      --arg slug "$SITE_SLUG" \
+      --arg subid "$SUB" \
+      '{name: $name, slug: $slug, custom_fields: {azure_subscription_id: $subid}}'
+    )
+
+    netbox_post "/dcim/sites" "$SITE_DATA"
+    echo "Added site: $SUB_NAME ($SUB)"
+done
+What this does:
+Loops over all Azure subscriptions.
+For each, creates a NetBox Site with the subscription name.
+Stores the subscription ID in the custom field azure_subscription_id.
+If you want to use a different NetBox object or need a script in a different language, let me know!
+
+will be good to have a zip file for doanloading  it which contains all the above script, notifications ....
+That's a great idea! Creating a ZIP file for download containing all the scripts (Azure to NetBox integration, bulk aggregates, and any notification/readme files) will make it easy to distribute and use.
+
+Here’s what I can provide for you:
+A suggested folder structure and file list
+The content for each script and supporting file
+Instructions on how to package it yourself
+Suggested ZIP Folder Structure
+Code
+netbox-azure-bootstrap/
+├── README.md
+├── azure_to_netbox_sites.sh
+├── azure_to_netbox_prefixes.sh
+├── bulk_create_aggregates.sh
+├── aggregates.csv
+└── notifications.txt
+File: README.md (example content)
+Markdown
+# NetBox Azure Bootstrap Scripts
+
+This package helps you extract Azure subscription and network information, and push it into NetBox.
+
+## Scripts
+
+- `azure_to_netbox_sites.sh` — Creates NetBox Sites for each Azure subscription (including subscription ID in custom field).
+- `azure_to_netbox_prefixes.sh` — Pushes all Azure VNet prefixes into NetBox, attached to the correct site.
+- `bulk_create_aggregates.sh` — Bulk import IP aggregates from a CSV into NetBox.
+
+## Usage
+
+1. Edit each script to set your NetBox URL and API token.
+2. Ensure you have `az`, `jq`, and `curl` installed and authenticated.
+3. Run scripts as needed.
+
+See each script for details.
+File: azure_to_netbox_sites.sh
+(As given in earlier replies, includes NetBox custom field integration.)
+
+File: azure_to_netbox_prefixes.sh
+(As given in earlier replies, loops through subscriptions, creates prefixes in NetBox.)
+
+File: bulk_create_aggregates.sh
+(As given in earlier replies, reads aggregates.csv and creates aggregates in NetBox.)
+
+File: aggregates.csv
+CSV
+prefix,rir_slug
+10.0.0.0/8,rfc1918
+172.16.0.0/12,rfc1918
+192.168.0.0/16,rfc1918
+File: notifications.txt
+Code
+- Make sure you have 'azure_subscription_id' custom field created in NetBox for Sites.
+- Scripts require az, jq, and curl.
+- For large tenants, consider running scripts during off-hours.
+- Review NetBox API permissions.
+How to Package as a ZIP
+Create a folder named netbox-azure-bootstrap.
+Add all the above files into this folder.
+From the parent directory, run:
+sh
+zip -r netbox-azure-bootstrap.zip netbox-azure-bootstrap/
+If you want, I can generate and display the content for each of the scripts so you can copy-paste and create the files, or I can provide a gist or similar if you give me a location to upload.
+
+Would you like the full content for each script displayed here for easy copy-paste? Or do you have a preferred way to receive the ZIP?
+
+i preferred to receive a zip
+I'm unable to directly create or send files (including ZIPs) through this chat. However, I can provide you with everything you need—complete script contents, instructions, and a manifest—so you can quickly copy the files, place them in a directory, and run one command to generate your ZIP.
+
+Step 1: Copy and Create Files Locally
+1. Create a new folder:
+sh
+mkdir netbox-azure-bootstrap
+cd netbox-azure-bootstrap
+2. Create these files in the folder (copy-paste content from below):
+README.md
+Markdown
+# NetBox Azure Bootstrap Scripts
+
+This package helps you extract Azure subscription and network information, and push it into NetBox.
+
+## Scripts
+
+- `azure_to_netbox_sites.sh` — Creates NetBox Sites for each Azure subscription (including subscription ID in a custom field).
+- `azure_to_netbox_prefixes.sh` — Pushes all Azure VNet prefixes into NetBox, attached to the correct site.
+- `bulk_create_aggregates.sh` — Bulk import IP aggregates from a CSV into NetBox.
+
+## Usage
+
+1. Edit each script to set your NetBox URL and API token.
+2. Ensure you have `az`, `jq`, and `curl` installed and authenticated.
+3. Run scripts as needed.
+
+See each script for details.
+azure_to_netbox_sites.sh
+bash
+#!/bin/bash
+
+NETBOX_URL="https://your-netbox-instance/api"
+NETBOX_TOKEN="YOUR_NETBOX_API_TOKEN"
+
+# Helper function to POST to NetBox
+netbox_post() {
+    local endpoint="$1"
+    local data="$2"
+    curl -s -X POST "${NETBOX_URL}${endpoint}/" \
+        -H "Authorization: Token ${NETBOX_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "${data}"
+}
+
+for SUB in $(az account list --all --query '[].id' -o tsv); do
+    az account set --subscription "$SUB"
+    SUB_NAME=$(az account show --query 'name' -o tsv)
+    SITE_SLUG=$(echo "$SUB_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+
+    # Build the JSON payload with custom field for subscription ID
+    SITE_DATA=$(jq -n \
+      --arg name "$SUB_NAME" \
+      --arg slug "$SITE_SLUG" \
+      --arg subid "$SUB" \
+      '{name: $name, slug: $slug, custom_fields: {azure_subscription_id: $subid}}'
+    )
+
+    netbox_post "/dcim/sites" "$SITE_DATA"
+    echo "Added site: $SUB_NAME ($SUB)"
+done
+azure_to_netbox_prefixes.sh
+bash
+#!/bin/bash
+
+NETBOX_URL="https://your-netbox-instance/api"
+NETBOX_TOKEN="YOUR_NETBOX_API_TOKEN"
+
+netbox_post() {
+    local endpoint="$1"
+    local data="$2"
+    curl -s -X POST "${NETBOX_URL}${endpoint}/" \
+        -H "Authorization: Token ${NETBOX_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "${data}"
+}
+
+for SUB_ID in $(az account list --all --query '[].id' -o tsv); do
+  az account set --subscription "$SUB_ID"
+  SUB_NAME=$(az account show --query 'name' -o tsv)
+  SITE_SLUG=$(echo "$SUB_NAME" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+
+  # Fetch the Site ID by slug
+  SITE_ID=$(curl -s -X GET "${NETBOX_URL}/dcim/sites/?slug=$SITE_SLUG" \
+              -H "Authorization: Token ${NETBOX_TOKEN}" | jq '.results[0].id')
+
+  for VNET in $(az network vnet list --query '[].id' -o tsv); do
+    VNET_JSON=$(az network vnet show --ids "$VNET")
+    VNET_NAME=$(echo "$VNET_JSON" | jq -r '.name')
+    for PREFIX in $(echo "$VNET_JSON" | jq -r '.addressSpace.addressPrefixes[]'); do
+      PREFIX_DATA="{\"prefix\": \"$PREFIX\", \"site\": $SITE_ID, \"description\": \"VNet $VNET_NAME in $SUB_NAME\"}"
+      netbox_post "/ipam/prefixes" "$PREFIX_DATA"
+    done
+  done
+done
+bulk_create_aggregates.sh
+bash
+#!/bin/bash
+
+NETBOX_URL="https://your-netbox-instance/api"
+NETBOX_TOKEN="YOUR_NETBOX_API_TOKEN"
+CSV_FILE="aggregates.csv"
+
+# Helper to get RIR ID by slug
+get_rir_id() {
+    local slug=$1
+    curl -s -H "Authorization: Token $NETBOX_TOKEN" "$NETBOX_URL/ipam/rirs/?slug=$slug" | jq '.results[0].id'
+}
+
+while IFS=, read -r prefix rir_slug; do
+    # Skip header
+    if [[ "$prefix" == "prefix" ]]; then continue; fi
+
+    rir_id=$(get_rir_id "$rir_slug")
+    if [[ -z "$rir_id" || "$rir_id" == "null" ]]; then
+        echo "RIR not found for slug $rir_slug, skipping $prefix"
+        continue
+    fi
+
+    data="{\"prefix\": \"$prefix\", \"rir\": $rir_id}"
+    curl -s -X POST "$NETBOX_URL/ipam/aggregates/" \
+        -H "Authorization: Token $NETBOX_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d "$data"
+    echo "Created aggregate $prefix (RIR: $rir_slug)"
+done < "$CSV_FILE"
+aggregates.csv
+CSV
+prefix,rir_slug
+10.0.0.0/8,rfc1918
+172.16.0.0/12,rfc1918
+192.168.0.0/16,rfc1918
+notifications.txt
+Code
+- Make sure you have 'azure_subscription_id' custom field created in NetBox for Sites.
+- Scripts require az, jq, and curl.
+- For large tenants, consider running scripts during off-hours.
+- Review NetBox API permissions.
+Step 2: Create the ZIP
+In your netbox-azure-bootstrap directory:
+
+sh
+cd ..
+zip -r netbox-azure-bootstrap.zip netbox-azure-bootstrap/
+Step 3: Download or Share
+You now have a netbox-azure-bootstrap.zip ready to copy, move, or share.
+
+If you need the content of any file again, or want a one-liner shell script to generate all these files, let me know!
+
+yes but i would like to download now this zip
+I can’t send files directly or host downloads, but you can quickly create the ZIP yourself using the instructions and file contents I provided. Here’s a streamlined step-by-step to get your netbox-azure-bootstrap.zip on your own system in just a few minutes:
+
+1. Copy the File Contents
+Copy each script/content block from my previous answer and save them as individual files inside a new folder called netbox-azure-bootstrap:
+
+README.md
+azure_to_netbox_sites.sh
+azure_to_netbox_prefixes.sh
+bulk_create_aggregates.sh
+aggregates.csv
+notifications.txt
+2. Make the Folder
+sh
+mkdir netbox-azure-bootstrap
+cd netbox-azure-bootstrap
+3. Paste Each File
+For example, to create README.md:
+
+sh
+nano README.md
+# Paste the content, save & exit (Ctrl+O, Enter, Ctrl+X)
+Repeat for each file.
+
+4. Create the ZIP
+Once all files are in place:
+
+sh
+cd ..
+zip -r netbox-azure-bootstrap.zip netbox-azure-bootstrap/
+This will create netbox-azure-bootstrap.zip in your current directory, ready for download or sharing.
+
+If you need a copy-paste shell script that will auto-generate all files for you, let me know! I can provide a one-liner to create all files in seconds.
+
