@@ -1,0 +1,29 @@
+Voici une version intégrée avec PyYAML. Principales améliorations :
+Classe AzureNetboxConfig :
+
+Chargement automatique du fichier YAML
+Configuration par défaut si fichier absent
+Méthodes pour accéder aux sections
+Filtres de ressources avec regex
+
+Utilisation du fichier de configuration :
+bash# Fichier config.yaml dans le même répertoire
+python azure_to_netbox_improved.py
+
+# Fichier spécifique
+python azure_to_netbox_improved.py --config /path/to/config.yaml
+
+# Override avec CLI
+python azure_to_netbox_improved.py --netbox-url https://netbox.example.com --interactive
+Fonctionnalités ajoutées :
+
+Filtres par région, groupe de ressources, nom (regex)
+Configuration centralisée du logging
+Gestion SSL configurable
+Timeouts configurables
+Override des paramètres via CLI
+
+Installation requise :
+bashpip install pyyaml
+Le script reste compatible avec l'utilisation précédente tout en ajoutant la flexibilité de la configuration YAML.
+
