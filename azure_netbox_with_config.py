@@ -326,17 +326,8 @@ def setup_custom_fields(nb, config):
     logger.info("Configuration des champs personnalisés")
     
     try:
-        content_types = nb.extras.content_types.all()
-        logger.debug(f"Content types récupérés : {[{'model': ct.model, 'app_label': ct.app_label, 'id': ct.id} for ct in content_types]}")
-        prefix_content_type = None
-        for ct in content_types:
-            if ct.model == 'prefix' and ct.app_label == 'ipam':
-                prefix_content_type = ct.id
-                break
-        
-        if not prefix_content_type:
-            logger.error("Type de contenu pour les préfixes non trouvé")
-            return
+        # NetBox v4.x : utiliser le label 'ipam.prefix' directement
+        prefix_content_type = "ipam.prefix"
         
         # Champ abonnement Azure
         get_or_create_custom_field(
@@ -360,6 +351,7 @@ def setup_custom_fields(nb, config):
         
     except Exception as e:
         logger.error(f"Erreur lors de la configuration des champs : {str(e)}", exc_info=True)
+#
 
 def get_or_create_custom_field(nb, field_name, field_type, field_description, content_types):
     """Obtient ou crée un champ personnalisé"""
