@@ -1,0 +1,102 @@
+# Configuration Azure to Netbox Sync
+# Fichier de configuration pour la synchronisation Azure vers Netbox
+
+# Configuration Netbox
+netbox:
+  url: "http://localhost:8080"
+  token: "xxxxx"
+
+# Configuration Azure
+azure:
+  # Authentification
+  authentication:
+    # Options: default, interactive
+    method: "default"
+
+  # Abonnements à traiter
+  subscriptions:
+    # Option 1: Traiter tous les abonnements accessibles
+    #process_all: true
+
+    # Option 2: Traiter un abonnement spécifique
+    specific_id: "xxxxx"
+
+    # Option 3: Traiter tous les abonnements d'un groupe de gestion
+    # management_group:
+    #   id: "mg-production"
+    #   name: "Production Management Group"
+
+# Configuration du mapping
+mapping:
+  # Préfixe pour les sites Azure
+  site_prefix: "Azure-"
+
+  # Préfixe pour les types de périphériques
+  device_type_prefix: "Azure"
+
+  # Préfixe pour les rôles de périphériques
+  device_role_prefix: "Azure"
+
+  # Fabricant par défaut
+  manufacturer: "Microsoft Azure"
+
+  # Interface par défaut
+  default_interface: "eth0"
+
+  # Longueur max des noms
+  max_name_length: 64
+
+# Configuration des tags
+tags:
+  # Tag principal pour les objets synchronisés
+  sync_tag:
+    name: "azure-sync"
+    description: "Synced from Azure"
+
+  # Tags additionnels
+  additional_tags: []
+
+# Configuration des champs personnalisés
+custom_fields:
+  # Champ abonnement Azure
+  azure_subscription:
+    enabled: true
+    field_type: "text"
+    description: "Azure subscription name and ID"
+
+  # Champ URL abonnement Azure
+  azure_subscription_url:
+    enabled: true
+    field_type: "url"
+    description: "Direct link to Azure subscription portal"
+
+# Configuration du logging
+logging:
+  level: "INFO" # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Configuration des filtres
+filters:
+  # Filtrer par région Azure
+  regions:
+    include: [] # Vide = toutes les régions
+    exclude: [] # Régions à exclure
+
+  # Filtrer par groupe de ressources
+  resource_groups:
+    include: [] # Vide = tous les groupes
+    exclude: [] # Groupes à exclure
+
+  # Filtrer par nom de ressource
+  resource_names:
+    include_patterns: [] # Regex patterns
+    exclude_patterns: [] # Regex patterns
+
+# Configuration SSL
+ssl:
+  verify: true # Vérification SSL pour Netbox
+
+# Configuration des timeouts
+timeouts:
+  azure_api: 30 # secondes
+  netbox_api: 30 # secondes
