@@ -1,15 +1,3 @@
-Yes, the Python script I provided in my previous response is intended to be the full, complete version with all the fixes (including querying the real subscription name and forcing clean custom field values). However, it looks like the code got cut off at the end in the message (likely due to length limits in this chat). I'll repost the **full, complete script** below to ensure nothing is missing.
-
-This version includes:
-- The fix for using only the subscription name (e.g., "mysub") in 'azure_subscription'.
-- Querying the real display name for specific subscriptions.
-- Force-updating existing prefixes if the custom field contains an ID-like string.
-- All previous features (YAML config parsing, SPN auth, VNet-only sync, etc.).
-
-Copy-paste this directly into your script file and test it. If you still see the ID in the custom field after running, share the logs (especially around "Retrieved real display name" or "Forced update"), and I'll debug further!
-
-### Full Python Script
-```python
 #!/usr/bin/env python3
 
 import os
@@ -446,11 +434,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
-
-### Quick Test Steps
-1. **Run with Specific Subscription**: Use `--subscription-id your-sub-id` (or set in YAML). Check the logs for "Retrieved real display name" — it should show the actual name (e.g., "mysub").
-2. **Check NetBox**: After sync, look at a prefix's custom fields. 'azure_subscription' should now be just "mysub" (no ID). If it was previously set with an ID, the force-update (via regex) should clean it.
-3. **If Still an Issue**: Delete the prefix in NetBox and re-run (to test creation). Or share the exact value you see in the field and the logs.
-
-This should finally nail it—let me know the results! 😊
