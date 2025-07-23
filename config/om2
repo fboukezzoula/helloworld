@@ -1,19 +1,14 @@
-I'm sorry to hear the custom field isn't behaving as expected during your tests—that's frustrating! Based on your description, it sounds like the 'azure_subscription' custom field is still getting populated with a value that includes the subscription ID (e.g., "Subscription 1234..." or "name - ID"), even though the code is set to use only the name. I'll explain the likely cause and provide a fixed version of the script below.
+Yes, the Python script I provided in my previous response is intended to be the full, complete version with all the fixes (including querying the real subscription name and forcing clean custom field values). However, it looks like the code got cut off at the end in the message (likely due to length limits in this chat). I'll repost the **full, complete script** below to ensure nothing is missing.
 
-### Why This Is Happening
-- **Fallback Name Issue**: In the script's `main()` function, when you specify a single subscription via `--subscription-id` (or the YAML equivalent), it uses a fallback display name like `f"Subscription {subscription_id}"` (e.g., "Subscription 17aacc5c-13aa-4a84-857b-212f9759ce9d"). This fallback *includes the ID*, so when we set `azure_subscription_value = subscription_name`, it inadvertently includes the ID.
-- **Existing Prefixes**: If the prefix already exists in NetBox with the old value (including ID), the update logic checks for differences but might not overwrite if the new value matches the old one (or if no change is detected). However, the main culprit is the fallback.
-- **Real Name Fetching**: For all/other subscriptions, the script fetches the real `display_name` (e.g., "mysub") from Azure. We need to do the same for specific subscriptions to get the actual name without the ID.
+This version includes:
+- The fix for using only the subscription name (e.g., "mysub") in 'azure_subscription'.
+- Querying the real display name for specific subscriptions.
+- Force-updating existing prefixes if the custom field contains an ID-like string.
+- All previous features (YAML config parsing, SPN auth, VNet-only sync, etc.).
 
-### Fixes in This Update
-- **Query Real Subscription Name**: When using `--subscription-id` (or YAML `specific_id`), the script now queries Azure to get the actual `display_name` (e.g., "mysub") using `SubscriptionClient.subscriptions.get()`. This ensures we always use the real name, not a fallback with the ID.
-- **Force Clean Value**: Explicitly set `azure_subscription` to *only* the name (stripping any ID if present, though the query should prevent that).
-- **Update Logic Enhancement**: Added a force-update if the existing value contains an ID pattern (e.g., via regex check for GUID-like strings) to clean up any legacy values during sync.
-- **No Other Changes**: The rest of the script (YAML parsing, VNet sync, etc.) remains the same. This fix is isolated to subscription handling and custom field setting.
+Copy-paste this directly into your script file and test it. If you still see the ID in the custom field after running, share the logs (especially around "Retrieved real display name" or "Forced update"), and I'll debug further!
 
-### Updated Script
-Replace your existing script with this version. It includes the fixes above.
-
+### Full Python Script
 ```python
 #!/usr/bin/env python3
 
@@ -23,7 +18,7 @@ import logging
 import argparse
 from pathlib import Path
 import yaml
-import re  # New: For regex check in custom field update
+import re  # For regex check in custom field update
 from azure.identity import DefaultAzureCredential, InteractiveBrowserCredential, ClientSecretCredential
 from azure.mgmt.subscription import SubscriptionClient
 from azure.mgmt.network import NetworkManagementClient
@@ -416,4 +411,46 @@ def main():
                 logger.info(f"Retrieved real display name for subscription {specific_id}: {real_display_name}")
             except Exception as e:
                 logger.warning(f"Could not retrieve display name for {specific_id}: {str(e)}. Using fallback.")
-                real_display
+                real_display_name = f"Subscription {specific_id}"
+            subscriptions = [type('obj', (object,), {
+                'subscription_id': specific_id,
+                'display_name': real_display_name
+            })]
+        elif process_all:
+            subscriptions = get_azure_subscriptions(credential)
+        else:
+            logger.error("No subscription processing method specified")
+            sys.exit(1)
+        
+        all_network_data = []
+        
+        for subscription in subscriptions:
+            subscription_id = subscription.subscription_id
+            subscription_data = {
+                'subscription_id': subscription_id,
+                'subscription_name': subscription.display_name,
+                'vnets': []
+            }
+            
+            vnets_data = get_vnets_and_subnets(subscription_id, credential)
+            subscription_data['vnets'] = vnets_data
+            all_network_data.append(subscription_data)
+        
+        sync_to_netbox(all_network_data, netbox_url, netbox_token, config)
+        
+        logger.info("Azure to Netbox sync completed successfully")
+        
+    except Exception as e:
+        logger.error(f"Error during Azure to Netbox sync: {str(e)}", exc_info=True)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+```
+
+### Quick Test Steps
+1. **Run with Specific Subscription**: Use `--subscription-id your-sub-id` (or set in YAML). Check the logs for "Retrieved real display name" — it should show the actual name (e.g., "mysub").
+2. **Check NetBox**: After sync, look at a prefix's custom fields. 'azure_subscription' should now be just "mysub" (no ID). If it was previously set with an ID, the force-update (via regex) should clean it.
+3. **If Still an Issue**: Delete the prefix in NetBox and re-run (to test creation). Or share the exact value you see in the field and the logs.
+
+This should finally nail it—let me know the results! 😊
