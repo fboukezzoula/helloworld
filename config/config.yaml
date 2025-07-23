@@ -1,69 +1,85 @@
+Below is a complete template for your `config.yaml` file, based on the structure you provided in your query. This template includes **all sections** with example values, placeholders, and comments (I've kept the mix of French and English comments from your sample for familiarity, but added clarifications where needed). It matches the parsing logic in the script I provided earlier.
+
+You can copy-paste this directly into a `config.yaml` file in your script's directory. Customize the values as needed (e.g., replace placeholders like "https://your-netbox-instance.com" with real values). Commented-out sections (e.g., `# specific_id`) show optional configurations—uncomment and fill them in if you want to use them.
+
+### config.yaml Template
+```yaml
 # Configuration Azure to Netbox Sync
 # Fichier de configuration pour la synchronisation Azure vers Netbox
 
 # Configuration Netbox
+# (Required: URL and token for NetBox API access)
 netbox:
-  url: "http://localhost:8080"
-  token: "xxxxx"
+  url: "https://your-netbox-instance.com"  # e.g., http://localhost:8080 or your production URL
+  token: "your-netbox-api-token"  # Your NetBox API token
 
 # Configuration Azure
+# (Settings for Azure authentication and subscription processing)
 azure:
   # Authentification
   authentication:
-    # Options: default, interactive
+    # Options: default (uses DefaultAzureCredential), interactive (browser login), or provide SPN details below
     method: "default"
-
+    # For SPN (Service Principal) auth (optional; overrides method if all are provided)
+    # client_id: "your-azure-client-id"
+    # client_secret: "your-azure-client-secret"
+    # tenant_id: "your-azure-tenant-id"
+    
   # Abonnements à traiter
+  # (Choose one option; CLI args can override these)
   subscriptions:
-    # Option 1: Traiter tous les abonnements accessibles
-    #process_all: true
-
-    # Option 2: Traiter un abonnement spécifique
-    specific_id: "xxxxx"
-
-    # Option 3: Traiter tous les abonnements d'un groupe de gestion
+    # Option 1: Traiter tous les abonnements accessibles (set to true for all accessible subs)
+    process_all: true
+    
+    # Option 2: Traiter un abonnement spécifique (uncomment and set ID)
+    # specific_id: "12345678-1234-1234-1234-123456789012"
+    
+    # Option 3: Traiter tous les abonnements d'un groupe de gestion (uncomment and set ID or name)
     # management_group:
-    #   id: "mg-production"
-    #   name: "Production Management Group"
+    #   id: "mg-production"  # Management Group ID
+    #   name: "Production Management Group"  # Management Group display name (used if ID is not provided)
 
 # Configuration du mapping
+# (Mapping settings for devices/sites—currently unused in the script but parsed for future extensions)
 mapping:
   # Préfixe pour les sites Azure
   site_prefix: "Azure-"
-
+  
   # Préfixe pour les types de périphériques
   device_type_prefix: "Azure"
-
+  
   # Préfixe pour les rôles de périphériques
   device_role_prefix: "Azure"
-
+  
   # Fabricant par défaut
   manufacturer: "Microsoft Azure"
-
+  
   # Interface par défaut
   default_interface: "eth0"
-
+  
   # Longueur max des noms
   max_name_length: 64
 
 # Configuration des tags
+# (Tags applied to synced objects)
 tags:
   # Tag principal pour les objets synchronisés
   sync_tag:
     name: "azure-sync"
     description: "Synced from Azure"
-
-  # Tags additionnels
-  additional_tags: []
+    
+  # Tags additionnels (list of tag names; currently unused but parsed)
+  additional_tags: []  # e.g., ["cloud", "production"]
 
 # Configuration des champs personnalisés
+# (Custom fields for prefixes in NetBox; set enabled: false to skip creation)
 custom_fields:
   # Champ abonnement Azure
   azure_subscription:
     enabled: true
     field_type: "text"
-    description: "Azure subscription name and ID"
-
+    description: "Azure subscription name"  # Updated as per your request (only name)
+    
   # Champ URL abonnement Azure
   azure_subscription_url:
     enabled: true
@@ -71,32 +87,48 @@ custom_fields:
     description: "Direct link to Azure subscription portal"
 
 # Configuration du logging
+# (Logging level and format; applied at runtime)
 logging:
-  level: "INFO" # DEBUG, INFO, WARNING, ERROR
+  level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 # Configuration des filtres
+# (Filters for Azure resources; currently logged but not fully implemented—extend the script if needed)
 filters:
   # Filtrer par région Azure
   regions:
-    include: [] # Vide = toutes les régions
-    exclude: [] # Régions à exclure
-
+    include: []  # e.g., ["westeurope", "eastus"] (empty = all regions)
+    exclude: []  # e.g., ["northcentralus"] (regions to exclude)
+    
   # Filtrer par groupe de ressources
   resource_groups:
-    include: [] # Vide = tous les groupes
-    exclude: [] # Groupes à exclure
-
-  # Filtrer par nom de ressource
+    include: []  # e.g., ["rg-production"] (empty = all groups)
+    exclude: []  # e.g., ["rg-test"] (groups to exclude)
+    
+  # Filtrer par nom de ressource (using regex patterns)
   resource_names:
-    include_patterns: [] # Regex patterns
-    exclude_patterns: [] # Regex patterns
+    include_patterns: []  # e.g., ["^aks-.*"] (patterns to include)
+    exclude_patterns: []  # e.g., ["^test-.*"] (patterns to exclude)
 
 # Configuration SSL
+# (SSL verification for NetBox API calls)
 ssl:
-  verify: true # Vérification SSL pour Netbox
+  verify: true  # Set to false to disable SSL verification (not recommended for production)
 
 # Configuration des timeouts
+# (API timeouts in seconds)
 timeouts:
-  azure_api: 30 # secondes
-  netbox_api: 30 # secondes
+  azure_api: 30  # Timeout for Azure API calls
+  netbox_api: 30  # Timeout for NetBox API calls
+```
+
+### How to Use This Template
+1. **Save It**: Create a file named `config.yaml` in the same directory as your Python script, and paste the above content.
+2. **Customize**:
+   - Fill in real values (e.g., NetBox URL/token, Azure auth details).
+   - For subscriptions: Enable only one option (e.g., set `process_all: true` and comment out the others).
+   - For optional sections: Leave them as-is or comment them out if not needed—the script handles missing keys gracefully.
+3. **Run the Script**: Execute your Python script. It will load `config.yaml` automatically. Use CLI args to override (e.g., `python script.py --netbox-url https://new-url.com`).
+4. **Validation**: If the YAML is invalid (e.g., syntax error), the script will log an error and fall back to defaults/CLI args.
+
+This template covers everything in your sample while aligning with the script's parsing. If you need adjustments (e.g., more defaults or validation), or if testing reveals issues, let me know!
