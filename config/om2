@@ -1,0 +1,419 @@
+I'm sorry to hear the custom field isn't behaving as expected during your tests—that's frustrating! Based on your description, it sounds like the 'azure_subscription' custom field is still getting populated with a value that includes the subscription ID (e.g., "Subscription 1234..." or "name - ID"), even though the code is set to use only the name. I'll explain the likely cause and provide a fixed version of the script below.
+
+### Why This Is Happening
+- **Fallback Name Issue**: In the script's `main()` function, when you specify a single subscription via `--subscription-id` (or the YAML equivalent), it uses a fallback display name like `f"Subscription {subscription_id}"` (e.g., "Subscription 17aacc5c-13aa-4a84-857b-212f9759ce9d"). This fallback *includes the ID*, so when we set `azure_subscription_value = subscription_name`, it inadvertently includes the ID.
+- **Existing Prefixes**: If the prefix already exists in NetBox with the old value (including ID), the update logic checks for differences but might not overwrite if the new value matches the old one (or if no change is detected). However, the main culprit is the fallback.
+- **Real Name Fetching**: For all/other subscriptions, the script fetches the real `display_name` (e.g., "mysub") from Azure. We need to do the same for specific subscriptions to get the actual name without the ID.
+
+### Fixes in This Update
+- **Query Real Subscription Name**: When using `--subscription-id` (or YAML `specific_id`), the script now queries Azure to get the actual `display_name` (e.g., "mysub") using `SubscriptionClient.subscriptions.get()`. This ensures we always use the real name, not a fallback with the ID.
+- **Force Clean Value**: Explicitly set `azure_subscription` to *only* the name (stripping any ID if present, though the query should prevent that).
+- **Update Logic Enhancement**: Added a force-update if the existing value contains an ID pattern (e.g., via regex check for GUID-like strings) to clean up any legacy values during sync.
+- **No Other Changes**: The rest of the script (YAML parsing, VNet sync, etc.) remains the same. This fix is isolated to subscription handling and custom field setting.
+
+### Updated Script
+Replace your existing script with this version. It includes the fixes above.
+
+```python
+#!/usr/bin/env python3
+
+import os
+import sys
+import logging
+import argparse
+from pathlib import Path
+import yaml
+import re  # New: For regex check in custom field update
+from azure.identity import DefaultAzureCredential, InteractiveBrowserCredential, ClientSecretCredential
+from azure.mgmt.subscription import SubscriptionClient
+from azure.mgmt.network import NetworkManagementClient
+from azure.mgmt.managementgroups import ManagementGroupsAPI
+from pynetbox import api
+from pynetbox.core.query import RequestError
+import requests
+
+# Default logging config (can be overridden by YAML or CLI)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+def load_config_yaml(config_path='config.yaml'):
+    """Load configuration from YAML file if it exists"""
+    config = {}
+    config_file = Path(config_path)
+    if config_file.exists():
+        try:
+            with open(config_file, 'r') as f:
+                config = yaml.safe_load(f)
+            logger.info(f"Loaded configuration from {config_path}")
+        except yaml.YAMLError as e:
+            logger.error(f"Error parsing {config_path}: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error loading {config_path}: {str(e)}")
+    else:
+        logger.info(f"No {config_path} found; using defaults and CLI args")
+    return config
+
+def get_azure_credentials(config, args):
+    """Get Azure credentials based on config and args"""
+    # Get auth method (CLI overrides YAML)
+    auth_method = args.auth_method or config.get('azure', {}).get('authentication', {}).get('method', 'default')
+    
+    client_id = args.azure_client_id or config.get('azure', {}).get('authentication', {}).get('client_id')
+    client_secret = args.azure_client_secret or config.get('azure', {}).get('authentication', {}).get('client_secret')
+    tenant_id = args.azure_tenant_id or config.get('azure', {}).get('authentication', {}).get('tenant_id')
+    
+    if client_id and client_secret and tenant_id:
+        logger.info("Using Azure Service Principal authentication")
+        return ClientSecretCredential(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret
+        )
+    elif auth_method == 'interactive':
+        logger.info("Using interactive browser authentication for Azure")
+        return InteractiveBrowserCredential()
+    else:
+        logger.info("Using default Azure credential chain")
+        return DefaultAzureCredential()
+
+def get_management_group_subscriptions(credential, management_group_id=None, management_group_name=None):
+    """Get all subscriptions from a management group"""
+    logger.info("Getting subscriptions from management group")
+    
+    try:
+        mg_client = ManagementGroupsAPI(credential)
+        
+        if management_group_name and not management_group_id:
+            logger.info(f"Looking for management group with name: {management_group_name}")
+            management_groups = mg_client.management_groups.list()
+            for mg in management_groups:
+                if mg.display_name == management_group_name:
+                    management_group_id = mg.name
+                    logger.info(f"Found management group ID: {management_group_id}")
+                    break
+            
+            if not management_group_id:
+                logger.error(f"Management group with name '{management_group_name}' not found")
+                return []
+        
+        mg_details = mg_client.management_groups.get(
+            group_id=management_group_id,
+            expand="children",
+            recurse=True
+        )
+        
+        subscriptions = []
+        
+        def extract_subscriptions(mg_node):
+            if hasattr(mg_node, 'children') and mg_node.children:
+                for child in mg_node.children:
+                    if child.type == "/subscriptions":
+                        subscription_info = type('obj', (object,), {
+                            'subscription_id': child.name,
+                            'display_name': child.display_name
+                        })
+                        subscriptions.append(subscription_info)
+                        logger.info(f"Found subscription: {child.display_name} ({child.name})")
+                    elif child.type == "/providers/Microsoft.Management/managementGroups":
+                        extract_subscriptions(child)
+        
+        extract_subscriptions(mg_details)
+        
+        logger.info(f"Found {len(subscriptions)} subscriptions in management group")
+        return subscriptions
+        
+    except Exception as e:
+        logger.error(f"Error getting subscriptions from management group: {str(e)}")
+        return []
+
+def get_azure_subscriptions(credential):
+    """Get all Azure subscriptions accessible by the credentials"""
+    logger.info("Getting Azure subscriptions")
+    subscription_client = SubscriptionClient(credential)
+    subscriptions = list(subscription_client.subscriptions.list())
+    logger.info(f"Found {len(subscriptions)} subscriptions")
+    return subscriptions
+
+def get_vnets_and_subnets(subscription_id, credential):
+    """Get all VNets and their address spaces in a subscription (skipping subnets and devices)"""
+    logger.info(f"Getting VNets for subscription {subscription_id}")
+    network_client = NetworkManagementClient(credential, subscription_id)
+    
+    vnets = list(network_client.virtual_networks.list_all())
+    logger.info(f"Found {len(vnets)} VNets in subscription {subscription_id}")
+    
+    vnet_data = []
+    for vnet in vnets:
+        vnet_info = {
+            'name': vnet.name,
+            'id': vnet.id,
+            'resource_group': vnet.id.split('/')[4],
+            'location': vnet.location,
+            'address_space': [prefix for prefix in vnet.address_space.address_prefixes]
+        }
+        vnet_data.append(vnet_info)
+    
+    return vnet_data
+
+def get_or_create_tag(nb, tag_name, tag_slug, tag_description):
+    """Get or create a tag in Netbox"""
+    try:
+        tag = nb.extras.tags.get(slug=tag_slug)
+        if tag:
+            logger.info(f"Found existing tag: {tag_slug}")
+            return tag
+    except Exception as e:
+        logger.debug(f"Error getting tag {tag_slug}: {str(e)}")
+    
+    logger.info(f"Creating new tag: {tag_slug}")
+    return nb.extras.tags.create(
+        name=tag_name,
+        slug=tag_slug,
+        description=tag_description
+    )
+
+def get_or_create_custom_field(nb, field_name, field_type, field_description, object_types, field_choices=None):
+    """
+    Get or create a custom field in NetBox 4.x.
+    Uses 'object_types' instead of 'content_types'.
+    """
+    try:
+        custom_field = nb.extras.custom_fields.get(name=field_name)
+        if custom_field:
+            logger.info(f"Found existing custom field: {field_name}")
+            return custom_field
+    except Exception as e:
+        logger.debug(f"Error getting custom field {field_name}: {str(e)}")
+
+    logger.info(f"Creating new custom field: {field_name}")
+    field_data = {
+        'name': field_name,
+        'label': field_name.replace('_', ' ').title(),
+        'type': field_type,
+        'description': field_description,
+        'object_types': object_types,
+        'required': False,
+        'default': None
+    }
+    if field_choices:
+        field_data['choices'] = field_choices
+
+    return nb.extras.custom_fields.create(**field_data)
+
+def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, subscription_id=None):
+    """Get or create a prefix in Netbox"""
+    try:
+        existing_prefixes = nb.ipam.prefixes.filter(prefix=prefix_value)
+        
+        if existing_prefixes:
+            logger.info(f"Found existing prefix: {prefix_value}")
+            prefix = list(existing_prefixes)[0]
+            
+            needs_update = False
+            for key, value in defaults.items():
+                if key == 'parent':  # Skip 'parent' for updates; it's not directly settable
+                    continue
+                current_value = getattr(prefix, key, None)
+                if current_value != value:
+                    setattr(prefix, key, value)
+                    needs_update = True
+            
+            if subscription_name and subscription_id:
+                custom_fields = getattr(prefix, 'custom_fields', {}) or {}
+                azure_subscription_value = subscription_name  # Only the name, no ID
+                
+                # Force update if existing value contains an ID-like pattern (e.g., cleanup legacy values)
+                existing_value = custom_fields.get('azure_subscription', '')
+                if existing_value != azure_subscription_value or re.search(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', existing_value, re.IGNORECASE):
+                    custom_fields['azure_subscription'] = azure_subscription_value
+                    custom_fields['azure_subscription_url'] = f"https://portal.azure.com/#@/subscription/{subscription_id}/overview"
+                    prefix.custom_fields = custom_fields
+                    needs_update = True
+                    logger.debug(f"Forced update of azure_subscription to clean value: {azure_subscription_value}")
+            
+            if needs_update:
+                prefix.save()
+                logger.info(f"Updated prefix: {prefix_value}")
+                
+            return prefix, False
+    except AttributeError as e:
+        logger.error(f"Attribute error when updating prefix {prefix_value}: {str(e)}")
+        # Fall through to creation if update fails critically
+    except Exception as e:
+        logger.debug(f"Error checking for existing prefix {prefix_value}: {str(e)}")
+    
+    try:
+        logger.info(f"Creating new prefix: {prefix_value}")
+        
+        if subscription_name and subscription_id:
+            if 'custom_fields' not in defaults:
+                defaults['custom_fields'] = {}
+            defaults['custom_fields']['azure_subscription'] = subscription_name  # Only the name, no ID
+            defaults['custom_fields']['azure_subscription_url'] = f"https://portal.azure.com/#@/subscription/{subscription_id}/overview"
+        
+        return nb.ipam.prefixes.create(
+            prefix=prefix_value,
+            **defaults
+        ), True
+    except RequestError as e:
+        if "Duplicate prefix found" in str(e):
+            logger.warning(f"Duplicate prefix found: {prefix_value}. Attempting to retrieve existing prefix.")
+            try:
+                existing_prefixes = nb.ipam.prefixes.filter(prefix=prefix_value)
+                if existing_prefixes:
+                    prefix = list(existing_prefixes)[0]
+                    logger.info(f"Retrieved existing prefix: {prefix_value}")
+                    # Optional: Check if it matches the desired parent
+                    if 'parent' in defaults and prefix.family.value != defaults['parent'].family.value:  # Basic check
+                        logger.warning(f"Existing prefix {prefix_value} may not match desired parent; manual review needed")
+                    return prefix, False
+            except Exception as inner_e:
+                logger.error(f"Error retrieving duplicate prefix {prefix_value}: {str(inner_e)}")
+        raise
+
+def setup_custom_fields(nb, config):
+    """Setup custom fields for Azure integration (NetBox 4.x) based on config"""
+    logger.info("Setting up custom fields for Azure integration")
+    custom_fields_config = config.get('custom_fields', {})
+    
+    try:
+        if custom_fields_config.get('azure_subscription', {}).get('enabled', True):
+            get_or_create_custom_field(
+                nb,
+                field_name="azure_subscription",
+                field_type=custom_fields_config.get('azure_subscription', {}).get('field_type', 'text'),
+                field_description=custom_fields_config.get('azure_subscription', {}).get('description', "Azure subscription name"),
+                object_types=["ipam.prefix"]
+            )
+        
+        if custom_fields_config.get('azure_subscription_url', {}).get('enabled', True):
+            get_or_create_custom_field(
+                nb,
+                field_name="azure_subscription_url",
+                field_type=custom_fields_config.get('azure_subscription_url', {}).get('field_type', 'url'),
+                field_description=custom_fields_config.get('azure_subscription_url', {}).get('description', "Direct link to Azure subscription portal"),
+                object_types=["ipam.prefix"]
+            )
+        logger.info("Custom fields setup completed")
+    except Exception as e:
+        logger.error(f"Error setting up custom fields: {str(e)}")
+
+def sync_to_netbox(all_network_data, netbox_url, netbox_token, config):
+    """Sync Azure VNet address spaces to Netbox as prefixes (skipping subnets and devices)"""
+    logger.info(f"Syncing data to Netbox at {netbox_url}")
+    
+    # Apply timeouts and SSL verify from config
+    session = requests.Session()
+    session.verify = config.get('ssl', {}).get('verify', True)
+    session.timeout = config.get('timeouts', {}).get('netbox_api', 30)
+    
+    nb = api(netbox_url, token=netbox_token)
+    nb.http_session = session
+    
+    setup_custom_fields(nb, config)
+    
+    # Get sync tag from config
+    sync_tag_config = config.get('tags', {}).get('sync_tag', {})
+    azure_tag = get_or_create_tag(
+        nb,
+        tag_name=sync_tag_config.get('name', "azure-sync"),
+        tag_slug="azure-sync",  # Slug is fixed for simplicity
+        tag_description=sync_tag_config.get('description', "Synced from Azure")
+    )
+    azure_tag_dict = [{'id': azure_tag.id}]
+    
+    # TODO: Apply additional_tags if needed
+    
+    for subscription_data in all_network_data:
+        subscription_id = subscription_data['subscription_id']
+        subscription_name = subscription_data['subscription_name']
+        
+        for vnet in subscription_data['vnets']:
+            for address_space in vnet['address_space']:
+                vnet_prefix, created = get_or_create_prefix(
+                    nb,
+                    address_space,
+                    {
+                        'description': f"Azure VNet: {vnet['name']} (Subscription: {subscription_id})",
+                        'status': 'active',
+                        'tags': azure_tag_dict
+                    },
+                    subscription_name=subscription_name,
+                    subscription_id=subscription_id
+                )
+                
+                action = "Created" if created else "Updated"
+                logger.info(f"{action} prefix for VNet {vnet['name']}: {address_space}")
+
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='Sync Azure network data to Netbox')
+    parser.add_argument('--netbox-url', help='Netbox URL')
+    parser.add_argument('--netbox-token', help='Netbox API token')
+    parser.add_argument('--auth-method', help='Azure auth method (default, interactive)')
+    parser.add_argument('--subscription-id', help='Specific Azure subscription ID to process')
+    parser.add_argument('--management-group-id', help='Azure Management Group ID')
+    parser.add_argument('--management-group-name', help='Azure Management Group name')
+    parser.add_argument('--azure-client-id', help='Azure Service Principal Client ID (appId)')
+    parser.add_argument('--azure-client-secret', help='Azure Service Principal Client Secret')
+    parser.add_argument('--azure-tenant-id', help='Azure Tenant ID')
+    # Add more CLI args if needed for other config sections (e.g., --log-level)
+    return parser.parse_args()
+
+def main():
+    """Main function to orchestrate the Azure to Netbox sync"""
+    # Load YAML config first
+    config = load_config_yaml()
+    
+    # Parse CLI args (override YAML)
+    args = parse_arguments()
+    
+    # Merge configs (CLI overrides YAML)
+    netbox_url = args.netbox_url or config.get('netbox', {}).get('url')
+    netbox_token = args.netbox_token or config.get('netbox', {}).get('token')
+    
+    if not netbox_url or not netbox_token:
+        logger.error("Netbox URL and token must be provided either as arguments or in config.yaml")
+        sys.exit(1)
+    
+    # Apply logging from config (after basicConfig, so reconfigure if needed)
+    log_level = config.get('logging', {}).get('level', 'DEBUG')
+    log_format = config.get('logging', {}).get('format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logging.basicConfig(level=log_level, format=log_format)
+    
+    # Handle filters (stub: log for now)
+    filters = config.get('filters', {})
+    if filters.get('regions', {}).get('include'):
+        logger.warning("Region include filters set but not implemented yet")
+    # Similarly for other filters
+    
+    try:
+        logger.info("Starting Azure to Netbox sync")
+        
+        credential = get_azure_credentials(config, args)
+        
+        # Subscription handling (CLI overrides YAML)
+        process_all = config.get('azure', {}).get('subscriptions', {}).get('process_all', True)
+        specific_id = args.subscription_id or config.get('azure', {}).get('subscriptions', {}).get('specific_id')
+        mg_id = args.management_group_id or config.get('azure', {}).get('subscriptions', {}).get('management_group', {}).get('id')
+        mg_name = args.management_group_name or config.get('azure', {}).get('subscriptions', {}).get('management_group', {}).get('name')
+        
+        if mg_id or mg_name:
+            subscriptions = get_management_group_subscriptions(credential, mg_id, mg_name)
+            if not subscriptions:
+                logger.error("No subscriptions found in the specified management group")
+                sys.exit(1)
+        elif specific_id:
+            logger.info(f"Processing only subscription {specific_id}")
+            # New: Query the real display_name from Azure
+            sub_client = SubscriptionClient(credential)
+            try:
+                sub_details = sub_client.subscriptions.get(specific_id)
+                real_display_name = sub_details.display_name  # e.g., "mysub"
+                logger.info(f"Retrieved real display name for subscription {specific_id}: {real_display_name}")
+            except Exception as e:
+                logger.warning(f"Could not retrieve display name for {specific_id}: {str(e)}. Using fallback.")
+                real_display
