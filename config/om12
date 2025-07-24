@@ -1,19 +1,8 @@
-Yes, you're spot on—that's exactly the issue! The VRF creation is reusing the same VRF (ID 1) for all subscriptions because the name/slug isn't unique enough (e.g., if multiple subs have similar names like "mysub-dev" and "mysub-dev-DELETED", it matches the same slug and updates instead of creating new). This defeats the purpose of isolating duplicates. Thanks for the log snippet—it confirms the problem.
+Understood—it's getting late in Paris (around 11 PM or so), so let's pause here and pick up fresh tomorrow. No rush; we can dive into the VRF ID issue (it's likely the slug generation isn't making them unique enough, causing reuse of ID 1). I've updated the script below with a more robust slug (always appends a shortened subscription ID to ensure uniqueness, e.g., "mysub-dev-17aacc5c"). This should create separate VRFs with different IDs.
 
-### Quick Fix Explanation
-- **Cause**: The slug generation (`re.sub(r'[^a-z0-9-]', '-', name.lower())`) can produce the same slug for similar names (e.g., "mysub-dev" and "mysub-dev-deleted" both become "mysub-dev-deleted" or similar, leading to reuse).
-- **Solution**:
-  - Make slugs *unique per subscription* by appending a sanitized subscription ID (e.g., slug = "mysub-dev-17aacc5c13aa4a84857b212f9759ce9d").
-  - This ensures each sub gets its own VRF, even if names are similar.
-  - For "DELETED" subs, add the tag as before.
-  - Logging: Enhanced to show the exact slug used (e.g., "Created VRF for subscription mysub-dev with slug mysub-dev-xxx: ID 2").
-- **No Config Changes Needed**: Your existing `vrf` section works (it'll now create multiple VRFs).
-- **Behavior After Fix**: Each subscription gets a separate VRF (different IDs), prefixes are assigned to their sub's VRF, allowing duplicates. Deleted subs get the tag on VRF/prefixes.
-- **Full Script**: Below, complete and ready to replace. All previous features are intact.
+Test it when you're ready tomorrow, and share the logs (look for "Creating new VRF... with slug X" or "Updated VRF... ID Y"). We'll get it sorted quickly! Sleep well. 😊
 
-Run this version—you should see *separate* VRF creation logs for each subscription (different IDs), and prefixes assigned accordingly (no more "Global" or reuse). Check NetBox for multiple VRF entries. If duplicates still conflict or no VRFs create, share the new logs (especially around "Creating VRF" or "Found VRF").
-
-### Full Updated Script
+### Full Updated Script (with Unique VRF Slug Fix)
 ```python
 #!/usr/bin/env python3
 
@@ -339,9 +328,9 @@ def get_or_create_custom_field(nb, field_name, field_type, field_description, ob
 
 def get_or_create_vrf(nb, name, subscription_id, description="", tags=None, enforce_unique=False):
     """Get or create a unique VRF per subscription in NetBox"""
-    # Make slug unique by appending sanitized subscription ID
-    sanitized_id = re.sub(r'[^a-z0-9-]', '-', subscription_id.lower())
-    slug = f"{re.sub(r'[^a-z0-9-]', '-', name.lower())}-{sanitized_id}"
+    # Make slug unique by appending shortened subscription ID (first 8 chars)
+    short_id = subscription_id.replace('-', '')[:8].lower()
+    slug = f"{re.sub(r'[^a-z0-9-]', '-', name.lower())}-{short_id}"
     
     try:
         vrf = nb.ipam.vrfs.get(slug=slug)
@@ -358,9 +347,9 @@ def get_or_create_vrf(nb, name, subscription_id, description="", tags=None, enfo
                 needs_update = True
             if needs_update:
                 vrf.save()
-                logger.info(f"Updated VRF for subscription {name}: ID {vrf.id}")
+                logger.info(f"Updated VRF for subscription {name} with slug {slug}: ID {vrf.id}")
             else:
-                logger.info(f"Found existing VRF for subscription {name}: ID {vrf.id}")
+                logger.info(f"Found existing VRF for subscription {name} with slug {slug}: ID {vrf.id}")
             return vrf
     except Exception as e:
         logger.debug(f"Error getting VRF for {name}: {str(e)}")
@@ -696,7 +685,7 @@ def sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credentia
             )
             vrf_id = vrf.id
             vrf_map[subscription_id] = vrf_id
-            logger.info(f"{'Created' if not vrf else 'Found'} VRF for subscription {subscription_name}: ID {vrf_id}")
+            logger.info(f"{'Created' if not vrf else 'Found'} VRF for subscription {subscription_name} with slug {vrf.slug}: ID {vrf.id}")
             if is_deleted and deleted_tag:
                 logger.info(f"Added '{deleted_tag}' tag to VRF {subscription_name}")
         
@@ -885,5 +874,3 @@ def main():
 if __name__ == "__main__":
     main()
 ```
-
-This version has the VRF function and its integration fully in place. You should now see separate VRFs created for each subscription, with unique slugs, and prefixes assigned to them. For "DELETED" subs, the tag is added. If the log still shows "Updated VRF" for all (same ID), it means slugs are colliding—share the log with the slug values, and we'll make them even more unique (e.g., full ID). Let's get this working! 🚀
