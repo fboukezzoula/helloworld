@@ -1,22 +1,17 @@
-I'm glad you're seeing some VRF-related logs now—that means the function is being called! However, from your description ("Found existing prefix: 193.140.200.0/0 in VRF None" and no VRF creation), it looks like:
-- VRFs aren't being created (likely because the condition to enable them is not met or there's a logic skip).
-- Prefixes are still assigned to "None" (global VRF), causing duplicates not to be isolated.
-- Deleted subscriptions aren't getting VRFs or tags, leading to conflicts.
+Yes, you're spot on—that's exactly the issue! The VRF creation is reusing the same VRF (ID 1) for all subscriptions because the name/slug isn't unique enough (e.g., if multiple subs have similar names like "mysub-dev" and "mysub-dev-DELETED", it matches the same slug and updates instead of creating new). This defeats the purpose of isolating duplicates. Thanks for the log snippet—it confirms the problem.
 
-This is fixable—it's a combination of a missing call to create VRFs in the loop and the prefix filter not strictly enforcing VRF isolation. I'll explain the fixes, then provide the full updated script.
+### Quick Fix Explanation
+- **Cause**: The slug generation (`re.sub(r'[^a-z0-9-]', '-', name.lower())`) can produce the same slug for similar names (e.g., "mysub-dev" and "mysub-dev-deleted" both become "mysub-dev-deleted" or similar, leading to reuse).
+- **Solution**:
+  - Make slugs *unique per subscription* by appending a sanitized subscription ID (e.g., slug = "mysub-dev-17aacc5c13aa4a84857b212f9759ce9d").
+  - This ensures each sub gets its own VRF, even if names are similar.
+  - For "DELETED" subs, add the tag as before.
+  - Logging: Enhanced to show the exact slug used (e.g., "Created VRF for subscription mysub-dev with slug mysub-dev-xxx: ID 2").
+- **No Config Changes Needed**: Your existing `vrf` section works (it'll now create multiple VRFs).
+- **Behavior After Fix**: Each subscription gets a separate VRF (different IDs), prefixes are assigned to their sub's VRF, allowing duplicates. Deleted subs get the tag on VRF/prefixes.
+- **Full Script**: Below, complete and ready to replace. All previous features are intact.
 
-### Quick Diagnosis and Fixes
-- **No VRF Creation**: The `get_or_create_vrf` function is defined, but the call to it was not in the subscription loop (it was stubbed). I've added it now in `sync_to_netbox` (per subscription).
-- **"VRF None" in Logs**: The prefix filter didn't handle VRF None correctly for duplicates. Updated to always create in the subscription's VRF if enabled, even if a global duplicate exists (NetBox allows this).
-- **Deleted Subscriptions**: Now checks if "DELETED" is in subscription_name, creates VRF with the tag (e.g., "deleted"), and adds it to prefixes' tags.
-- **Logging**: Enhanced with "Creating VRF for subscription X" or "Skipping VRF (disabled)" to make it clear.
-- **Config Check**: Ensure `vrf.enabled: true` in config.yaml (defaults to true if missing). If false, it skips and uses global (may cause duplicate errors).
-- **No Config Changes Needed**: Your existing config.yaml works.
-- **Full Script**: Below, complete and ready to replace. All previous features (peering with emojis, tenants, roles, aggregates, multiple address spaces, etc.) are intact.
-
-Run this version—look for logs like "Created VRF for subscription mysub-dev: ID 1" or "Added 'deleted' tag to VRF and prefixes". In NetBox, VRFs should appear under IPAM > VRFs, and prefixes should be assigned to them (not "Global"). Duplicates across subs should now sync without errors.
-
-If you still see "VRF None" or no creation, share your config.yaml's `vrf` section and the full sync log— we'll get it sorted!
+Run this version—you should see *separate* VRF creation logs for each subscription (different IDs), and prefixes assigned accordingly (no more "Global" or reuse). Check NetBox for multiple VRF entries. If duplicates still conflict or no VRFs create, share the new logs (especially around "Creating VRF" or "Found VRF").
 
 ### Full Updated Script
 ```python
@@ -342,9 +337,12 @@ def get_or_create_custom_field(nb, field_name, field_type, field_description, ob
 
     return nb.extras.custom_fields.create(**field_data)
 
-def get_or_create_vrf(nb, name, description="", tags=None, enforce_unique=False):
-    """Get or create a VRF in NetBox"""
-    slug = re.sub(r'[^a-z0-9-]', '-', name.lower())  # Sanitize for slug
+def get_or_create_vrf(nb, name, subscription_id, description="", tags=None, enforce_unique=False):
+    """Get or create a unique VRF per subscription in NetBox"""
+    # Make slug unique by appending sanitized subscription ID
+    sanitized_id = re.sub(r'[^a-z0-9-]', '-', subscription_id.lower())
+    slug = f"{re.sub(r'[^a-z0-9-]', '-', name.lower())}-{sanitized_id}"
+    
     try:
         vrf = nb.ipam.vrfs.get(slug=slug)
         if vrf:
@@ -360,14 +358,14 @@ def get_or_create_vrf(nb, name, description="", tags=None, enforce_unique=False)
                 needs_update = True
             if needs_update:
                 vrf.save()
-                logger.info(f"Updated VRF: {name} (ID: {vrf.id})")
+                logger.info(f"Updated VRF for subscription {name}: ID {vrf.id}")
             else:
-                logger.info(f"Found existing VRF: {name} (ID: {vrf.id})")
+                logger.info(f"Found existing VRF for subscription {name}: ID {vrf.id}")
             return vrf
     except Exception as e:
-        logger.debug(f"Error getting VRF {name}: {str(e)}")
+        logger.debug(f"Error getting VRF for {name}: {str(e)}")
     
-    logger.info(f"Creating new VRF: {name} with slug {slug}")
+    logger.info(f"Creating new VRF for subscription {name} with slug {slug}")
     return nb.ipam.vrfs.create(
         name=name,
         slug=slug,
@@ -691,6 +689,7 @@ def sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credentia
             vrf = get_or_create_vrf(
                 nb,
                 name=subscription_name,
+                subscription_id=subscription_id,  # Pass ID for unique slug
                 description=vrf_description,
                 tags=vrf_tags,
                 enforce_unique=enforce_unique
@@ -716,6 +715,12 @@ def sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credentia
         
         network_client = NetworkManagementClient(credential, subscription_id)
         
+        # New: Add deleted tag to prefix tags if applicable
+        prefix_additional_tags = additional_tags.copy()
+        if is_deleted and deleted_tag:
+            deleted_tag_obj = get_or_create_tag(nb, deleted_tag)
+            prefix_additional_tags.append({'id': deleted_tag_obj.id})
+        
         for vnet in subscription_data['vnets']:
             address_spaces = vnet['address_space']
             if not address_spaces:
@@ -726,12 +731,6 @@ def sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credentia
             
             peering_check = get_vnet_peerings(network_client, vnet['resource_group'], vnet['name'], config)
             logger.debug(f"Peering check for VNet {vnet['name']}: {peering_check}")
-            
-            # New: Add deleted tag to prefix tags if applicable
-            prefix_additional_tags = additional_tags.copy()
-            if is_deleted and deleted_tag:
-                deleted_tag_obj = get_or_create_tag(nb, deleted_tag)
-                prefix_additional_tags.append({'id': deleted_tag_obj.id})
             
             for idx, address_space in enumerate(address_spaces, 1):
                 logger.debug(f"Syncing address space {idx}/{len(address_spaces)} for VNet {vnet['name']}: {address_space}")
@@ -786,7 +785,7 @@ def sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credentia
                     aggregate_id=aggregate_id,
                     role_id=role_id,
                     tenant_id=tenant_id if assign_tenant else None,
-                    vrf_id=vrf_id,  # New: Pass VRF ID
+                    vrf_id=vrf_id,  # Assign VRF
                     tags=prefix_tags
                 )
                 
@@ -887,4 +886,4 @@ if __name__ == "__main__":
     main()
 ```
 
-This should create VRFs, assign them, and log everything. If you see "Skipping VRF assignment (disabled in config)" or no VRF logs, check your config.yaml's `vrf` section. If it's still not working, share the full sync log, and we'll debug line by line! 🚀
+This version has the VRF function and its integration fully in place. You should now see separate VRFs created for each subscription, with unique slugs, and prefixes assigned to them. For "DELETED" subs, the tag is added. If the log still shows "Updated VRF" for all (same ID), it means slugs are colliding—share the log with the slug values, and we'll make them even more unique (e.g., full ID). Let's get this working! 🚀
