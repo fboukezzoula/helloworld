@@ -1,35 +1,11 @@
-Great to hear everything's running smoothly now! 🎉 Let's add the new "Peering check" custom field feature as requested. I'll explain the approach, then provide the full updated script and config.yaml template.
+I'm sorry you're hitting this error—it's a scoping issue in the script (the `credential` object is defined in `main()` but not accessible in `sync_to_netbox` where the peering fetch happens). This is easy to fix by passing `credential` as a parameter to `sync_to_netbox`.
 
-### Approach
-- **New Custom Field "Peering check"**: This will be a text field on ipam.prefix, created if missing (via `setup_custom_fields`). It stores a formatted string summarizing the VNet's peerings (e.g., "name: peer1 - Fully Synchronized ok - Peering state Connected ok; name: peer2 - Fully Synchronized ko - Peering state Disconnected ko").
-  - **Data Source**: For each VNet, fetch peerings using Azure's `network_client.virtual_network_peerings.list(resource_group, vnet_name)`.
-  - **Values**:
-    - Peering name: Directly from `peering.name`.
-    - Peering sync: Check `peering.peering_sync_level` (e.g., 'FullySynchronized' → "ok", else "ko").
-    - Peering state: Check `peering.state` (e.g., 'Connected' → "ok", else "ko").
-  - If no peerings, set to "No peerings".
-  - If multiple, concatenate with "; ".
-- **Assignment**: Per prefix (address space), add the peering info to its custom_fields (since all prefixes for a VNet share the same peerings).
-- **Based on Aggregate Tag**: As before, but no changes needed here (the filter is already in place).
-- **Config.yaml**: Added an optional `peering` section to toggle/enable (defaults to enabled) and customize "ok"/"ko" strings if desired.
-- **Error Handling**: Skips if peering fetch fails (logs warning).
-- **Full Script**: Provided below, complete and ready to replace. Builds on all previous features (tenants with slug fix, roles, aggregates with tag copying, multiple address spaces, etc.).
+### Quick Fix Explanation
+- **Cause**: The line `network_client = NetworkManagementClient(credential, subscription_id)` references `credential`, but it's not in scope (global or passed). This only triggers when peering is enabled and there are VNets to process.
+- **Solution**: Update `main()` to pass `credential` to `sync_to_netbox`. No other changes needed (e.g., config.yaml remains the same).
+- **Full Script**: Provided below, complete and updated with this fix. Replace your current script with this version.
 
-This keeps the focus on Azure VNets and integrates seamlessly.
-
-### Updated config.yaml Template
-Add this new section to your existing `config.yaml` (or use the full template). It's optional—if missing, peering check is still enabled with defaults.
-
-```yaml
-# ... (All previous sections remain the same: netbox, azure, mapping, tags, custom_fields, logging, filters, ssl, timeouts, rirs, aggregates, ipam_roles, tenancy)
-
-# New: Configuration for Peering Check custom field
-peering:
-  enabled: true  # Set to false to disable peering checks
-  ok_value: "ok"  # String for successful states
-  ko_value: "ko"  # String for failed states
-  no_peerings_value: "No peerings"  # Value if VNet has no peerings
-```
+After updating, re-run—it should resolve the error. If you see permission issues on peering fetch (e.g., Azure auth errors), ensure your credential/SPN has "Network Contributor" role. Share new logs if needed!
 
 ### Full Updated Script
 ```python
@@ -594,7 +570,7 @@ def setup_custom_fields(nb, config):
     except Exception as e:
         logger.error(f"Error setting up custom fields: {str(e)}")
 
-def sync_to_netbox(all_network_data, netbox_url, netbox_token, config):
+def sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credential):  # Updated: Pass credential
     logger.info(f"Syncing data to Netbox at {netbox_url}")
     
     session = requests.Session()
@@ -640,9 +616,6 @@ def sync_to_netbox(all_network_data, netbox_url, netbox_token, config):
         tenant_data = tenant_map.get(subscription_id)
         tenant_id = tenant_data['id'] if tenant_data else None
         
-        # New: Network client for peering fetches (per subscription)
-        network_client = NetworkManagementClient(credential, subscription_id)
-        
         for vnet in subscription_data['vnets']:
             address_spaces = vnet['address_space']
             if not address_spaces:
@@ -651,7 +624,8 @@ def sync_to_netbox(all_network_data, netbox_url, netbox_token, config):
             
             logger.info(f"Processing VNet {vnet['name']} with {len(address_spaces)} address spaces")
             
-            # New: Fetch peerings once per VNet
+            # New: Fetch peerings once per VNet (using passed credential)
+            network_client = NetworkManagementClient(credential, subscription_id)
             peering_check = get_vnet_peerings(network_client, vnet['resource_group'], vnet['name'], config)
             logger.debug(f"Peering check for VNet {vnet['name']}: {peering_check}")
             
@@ -797,7 +771,7 @@ def main():
             subscription_data['vnets'] = vnets_data
             all_network_data.append(subscription_data)
         
-        sync_to_netbox(all_network_data, netbox_url, netbox_token, config)
+        sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credential)  # Updated: Pass credential
         
         logger.info("Azure to Netbox sync completed successfully")
         
@@ -810,10 +784,8 @@ if __name__ == "__main__":
 ```
 
 ### Testing Notes
-- **Peering Fetch**: Requires Azure permissions for Virtual Network Peerings (e.g., "Network Contributor" role on the SPN).
-- **Example Output in Custom Field**: For a VNet with peerings "peer1" (FullySynchronized, Connected) and "peer2" (PartiallySynchronized, Disconnected): "name: peer1 - FullySynchronized ok - Peering state Connected ok; name: peer2 - PartiallySynchronized ko - Peering state Disconnected ko".
-- **Logs**: Look for "Peering check for VNet X: Y" to see the formatted string.
-- **In NetBox**: Check the prefix's custom fields for "Peering check"—it should match the format.
-- **If No Peerings**: Sets "No peerings" (customizable).
+- **Error Resolution**: The "credential not defined" should be gone since it's now passed.
+- **Peering Fetch**: Now works per subscription inside the loop (using the passed credential).
+- **If New Errors**: If you see auth/permissions issues on peering (e.g., 403 Forbidden), check your Azure credential's roles. Otherwise, it should sync smoothly.
 
-Test this and confirm if the "Peering check" field populates correctly for your VNets. If the peering data isn't fetching (e.g., permission error), share the log, and we'll adjust. What's next? 🚀
+Give this a run and let me know if it's all good now. If yes, what's the next feature? 🚀
