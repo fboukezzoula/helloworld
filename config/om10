@@ -1,19 +1,11 @@
-I'm glad there are no more errors—that's progress! 😊 Sorry the peering sync status is still showing "ko" even when things are green in Azure. Let's fix this based on what you've described.
+Absolutely, we can replace "ok" with ✅ and "ko" with ❌ in the "Peering check" custom field output! This will make it more visual in NetBox (emojis render well in text fields). Since NetBox stores plain text, we'll use Unicode emojis directly (✅ is U+2705, ❌ is U+274C). If you prefer Markdown shortcodes (e.g., for reports outside NetBox), we could adjust, but for now, this embeds the emojis.
 
-### Why "ko" for FullyInSync?
-- **Root Cause**: The script checks for `sync_status == 'FullySynchronized'` to set "ok", but Azure's actual value for a fully synced peering is `'FullyInSync'` (not "Synchronized"—it's "InSync"). This mismatch causes it to always fall to "ko".
-  - Confirmed from Azure SDK: `peering.peering_sync_level` uses "FullyInSync" for healthy states (green icon in portal).
-  - Peering state ("Connected") seems correct, but if it's also "ko", it might be a similar naming issue (e.g., "Provisioned" vs "Connected"—we'll add logging to verify).
-- **Your Case**: Since your peerings are green (healthy), the raw value is likely "FullyInSync", but the code doesn't match it, so "ko".
+### Quick Changes
+- **Defaults Update**: In `get_vnet_peerings`, set `ok_value = '✅'` and `ko_value = '❌'` (overrides from config.yaml still work if set).
+- **Config.yaml**: You can override in the `peering` section (e.g., `ok_value: "✅"`), but it's optional.
+- **Full Script**: Provided below, complete and ready to replace your current one. All previous features (peering fetch, tenants, roles, aggregates, multiple address spaces, etc.) are intact.
 
-### Fixes in This Update
-- **Update Sync Check**: Changed to `if sync_status == 'FullyInSync'` for "ok" (matches Azure's enum).
-- **State Check**: Kept as `if state == 'Connected'`, but added flexibility (e.g., also accept 'Provisioned' if that's what Azure returns for green states—confirm with logs).
-- **Enhanced Logging**: Added debug logs for raw `sync_status` and `state` values (e.g., "Raw sync_status: FullyInSync, state: Connected") so you can see exactly what Azure returns.
-- **Error Fallback**: If status is "Unknown", set "ko" with a note.
-- **Full Script**: Provided below, complete and ready to replace. No config changes needed (your existing `peering` section works; add logs to verify raw values).
-
-Run this, check the logs for "Raw sync_status", and confirm if it now sets "ok" for green peerings. If not (e.g., unexpected raw value), share the log snippet, and we'll adjust the condition!
+Test this, and the output should look like: "name: peer1 - FullyInSync ✅ - Peering state Connected ✅".
 
 ### Full Updated Script
 ```python
@@ -165,8 +157,8 @@ def get_vnet_peerings(network_client, resource_group, vnet_name, config):
     if not peering_config.get('enabled', True):
         return "Peering check disabled"
     
-    ok_value = peering_config.get('ok_value', 'ok')
-    ko_value = peering_config.get('ko_value', 'ko')
+    ok_value = peering_config.get('ok_value', '✅')  # Updated default to emoji
+    ko_value = peering_config.get('ko_value', '❌')  # Updated default to emoji
     no_peerings = peering_config.get('no_peerings_value', 'No peerings')
     
     try:
@@ -179,10 +171,10 @@ def get_vnet_peerings(network_client, resource_group, vnet_name, config):
             sync_status = peering.peering_sync_level if hasattr(peering, 'peering_sync_level') else 'Unknown'
             state = peering.peering_state if hasattr(peering, 'peering_state') else 'Unknown'
             
-            logger.debug(f"Raw sync_status for {peering.name}: {sync_status}, state: {state}")  # New: Log raw values
+            logger.debug(f"Raw sync_status for {peering.name}: {sync_status}, state: {state}")  # Log raw values
             
-            sync_ok = ok_value if sync_status == 'FullyInSync' else ko_value  # Updated to match Azure's enum
-            state_ok = ok_value if state == 'Connected' else ko_value  # Add 'Provisioned' if needed: or state == 'Provisioned'
+            sync_ok = ok_value if sync_status == 'FullyInSync' else ko_value
+            state_ok = ok_value if state == 'Connected' else ko_value
             
             peering_strs.append(f"name: {peering.name} - {sync_status} {sync_ok} - Peering state {state} {state_ok}")
         
@@ -794,8 +786,8 @@ if __name__ == "__main__":
 ```
 
 ### Testing Notes
-- **Raw Values**: Check logs for "Raw sync_status: X, state: Y" — this will show exactly what Azure returns (e.g., "FullyInSync"). If it's something else (e.g., "RemoteInSync"), we can add it to the "ok" condition.
-- **Green Peerings**: If still "ko", reply with the raw log values, and I'll update the check (e.g., add more statuses like 'RemoteInSync' for "ok").
-- **Customizable**: If you want more statuses as "ok" (e.g., 'Provisioned' for state), add to the config or hardcode.
+- **Output Example**: "name: peer1 - FullyInSync ✅ - Peering state Connected ✅".
+- **Config Override**: In config.yaml, set `ok_value: "✅"` or even ":white_check_mark:" if you want shortcodes (NetBox will display as text, but you can use in reports).
+- **If Emojis Don't Render**: NetBox UI supports them, but if your console/logs don't, it's fine—the field in NetBox will show correctly.
 
-Run this and let me know the raw status logs—if it's "FullyInSync", it should now be "ok"! If not, we'll iterate. What's next? 🚀
+Run this and confirm the emojis appear in the custom field. If all good, what's the next feature? 🚀
