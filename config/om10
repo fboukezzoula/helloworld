@@ -1,0 +1,819 @@
+Great to hear everything's running smoothly now! 🎉 Let's add the new "Peering check" custom field feature as requested. I'll explain the approach, then provide the full updated script and config.yaml template.
+
+### Approach
+- **New Custom Field "Peering check"**: This will be a text field on ipam.prefix, created if missing (via `setup_custom_fields`). It stores a formatted string summarizing the VNet's peerings (e.g., "name: peer1 - Fully Synchronized ok - Peering state Connected ok; name: peer2 - Fully Synchronized ko - Peering state Disconnected ko").
+  - **Data Source**: For each VNet, fetch peerings using Azure's `network_client.virtual_network_peerings.list(resource_group, vnet_name)`.
+  - **Values**:
+    - Peering name: Directly from `peering.name`.
+    - Peering sync: Check `peering.peering_sync_level` (e.g., 'FullySynchronized' → "ok", else "ko").
+    - Peering state: Check `peering.state` (e.g., 'Connected' → "ok", else "ko").
+  - If no peerings, set to "No peerings".
+  - If multiple, concatenate with "; ".
+- **Assignment**: Per prefix (address space), add the peering info to its custom_fields (since all prefixes for a VNet share the same peerings).
+- **Based on Aggregate Tag**: As before, but no changes needed here (the filter is already in place).
+- **Config.yaml**: Added an optional `peering` section to toggle/enable (defaults to enabled) and customize "ok"/"ko" strings if desired.
+- **Error Handling**: Skips if peering fetch fails (logs warning).
+- **Full Script**: Provided below, complete and ready to replace. Builds on all previous features (tenants with slug fix, roles, aggregates with tag copying, multiple address spaces, etc.).
+
+This keeps the focus on Azure VNets and integrates seamlessly.
+
+### Updated config.yaml Template
+Add this new section to your existing `config.yaml` (or use the full template). It's optional—if missing, peering check is still enabled with defaults.
+
+```yaml
+# ... (All previous sections remain the same: netbox, azure, mapping, tags, custom_fields, logging, filters, ssl, timeouts, rirs, aggregates, ipam_roles, tenancy)
+
+# New: Configuration for Peering Check custom field
+peering:
+  enabled: true  # Set to false to disable peering checks
+  ok_value: "ok"  # String for successful states
+  ko_value: "ko"  # String for failed states
+  no_peerings_value: "No peerings"  # Value if VNet has no peerings
+```
+
+### Full Updated Script
+```python
+#!/usr/bin/env python3
+
+import os
+import sys
+import logging
+import argparse
+from pathlib import Path
+import yaml
+import re
+import ipaddress
+from azure.identity import DefaultAzureCredential, InteractiveBrowserCredential, ClientSecretCredential
+from azure.mgmt.subscription import SubscriptionClient
+from azure.mgmt.network import NetworkManagementClient
+from azure.mgmt.managementgroups import ManagementGroupsAPI
+from pynetbox import api
+from pynetbox.core.query import RequestError
+import requests
+
+# Default logging config (can be overridden by YAML or CLI)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+def load_config_yaml(config_path='config.yaml'):
+    """Load configuration from YAML file if it exists"""
+    config = {}
+    config_file = Path(config_path)
+    if config_file.exists():
+        try:
+            with open(config_file, 'r') as f:
+                config = yaml.safe_load(f)
+            logger.info(f"Loaded configuration from {config_path}")
+        except yaml.YAMLError as e:
+            logger.error(f"Error parsing {config_path}: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error loading {config_path}: {str(e)}")
+    else:
+        logger.info(f"No {config_path} found; using defaults and CLI args")
+    return config
+
+def get_azure_credentials(config, args):
+    """Get Azure credentials based on config and args"""
+    auth_method = args.auth_method or config.get('azure', {}).get('authentication', {}).get('method', 'default')
+    
+    client_id = args.azure_client_id or config.get('azure', {}).get('authentication', {}).get('client_id')
+    client_secret = args.azure_client_secret or config.get('azure', {}).get('authentication', {}).get('client_secret')
+    tenant_id = args.azure_tenant_id or config.get('azure', {}).get('authentication', {}).get('tenant_id')
+    
+    if client_id and client_secret and tenant_id:
+        logger.info("Using Azure Service Principal authentication")
+        return ClientSecretCredential(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret
+        )
+    elif auth_method == 'interactive':
+        logger.info("Using interactive browser authentication for Azure")
+        return InteractiveBrowserCredential()
+    else:
+        logger.info("Using default Azure credential chain")
+        return DefaultAzureCredential()
+
+def get_management_group_subscriptions(credential, management_group_id=None, management_group_name=None):
+    logger.info("Getting subscriptions from management group")
+    
+    try:
+        mg_client = ManagementGroupsAPI(credential)
+        
+        if management_group_name and not management_group_id:
+            logger.info(f"Looking for management group with name: {management_group_name}")
+            management_groups = mg_client.management_groups.list()
+            for mg in management_groups:
+                if mg.display_name == management_group_name:
+                    management_group_id = mg.name
+                    logger.info(f"Found management group ID: {management_group_id}")
+                    break
+            
+            if not management_group_id:
+                logger.error(f"Management group with name '{management_group_name}' not found")
+                return []
+        
+        mg_details = mg_client.management_groups.get(
+            group_id=management_group_id,
+            expand="children",
+            recurse=True
+        )
+        
+        subscriptions = []
+        
+        def extract_subscriptions(mg_node):
+            if hasattr(mg_node, 'children') and mg_node.children:
+                for child in mg_node.children:
+                    if child.type == "/subscriptions":
+                        subscription_info = type('obj', (object,), {
+                            'subscription_id': child.name,
+                            'display_name': child.display_name
+                        })
+                        subscriptions.append(subscription_info)
+                        logger.info(f"Found subscription: {child.display_name} ({child.name})")
+                    elif child.type == "/providers/Microsoft.Management/managementGroups":
+                        extract_subscriptions(child)
+        
+        extract_subscriptions(mg_details)
+        
+        logger.info(f"Found {len(subscriptions)} subscriptions in management group")
+        return subscriptions
+        
+    except Exception as e:
+        logger.error(f"Error getting subscriptions from management group: {str(e)}")
+        return []
+
+def get_azure_subscriptions(credential):
+    logger.info("Getting Azure subscriptions")
+    subscription_client = SubscriptionClient(credential)
+    subscriptions = list(subscription_client.subscriptions.list())
+    logger.info(f"Found {len(subscriptions)} subscriptions")
+    return subscriptions
+
+def get_vnets_and_subnets(subscription_id, credential):
+    logger.info(f"Getting VNets for subscription {subscription_id}")
+    network_client = NetworkManagementClient(credential, subscription_id)
+    
+    vnets = list(network_client.virtual_networks.list_all())
+    logger.info(f"Found {len(vnets)} VNets in subscription {subscription_id}")
+    
+    vnet_data = []
+    for vnet in vnets:
+        address_spaces = [prefix for prefix in vnet.address_space.address_prefixes if prefix]  # Skip empty
+        logger.debug(f"VNet {vnet.name} has {len(address_spaces)} address spaces: {address_spaces}")
+        vnet_info = {
+            'name': vnet.name,
+            'id': vnet.id,
+            'resource_group': vnet.id.split('/')[4],
+            'location': vnet.location,
+            'address_space': address_spaces
+        }
+        vnet_data.append(vnet_info)
+    
+    return vnet_data
+
+def get_vnet_peerings(network_client, resource_group, vnet_name, config):
+    """Fetch peerings for a VNet and format the 'Peering check' string"""
+    peering_config = config.get('peering', {})
+    if not peering_config.get('enabled', True):
+        return "Peering check disabled"
+    
+    ok_value = peering_config.get('ok_value', 'ok')
+    ko_value = peering_config.get('ko_value', 'ko')
+    no_peerings = peering_config.get('no_peerings_value', 'No peerings')
+    
+    try:
+        peerings = list(network_client.virtual_network_peerings.list(resource_group, vnet_name))
+        if not peerings:
+            return no_peerings
+        
+        peering_strs = []
+        for peering in peerings:
+            sync_status = peering.peering_sync_level if hasattr(peering, 'peering_sync_level') else 'Unknown'
+            state = peering.peering_state if hasattr(peering, 'peering_state') else 'Unknown'
+            
+            sync_ok = ok_value if sync_status == 'FullySynchronized' else ko_value
+            state_ok = ok_value if state == 'Connected' else ko_value
+            
+            peering_strs.append(f"name: {peering.name} - {sync_status} {sync_ok} - Peering state {state} {state_ok}")
+        
+        return "; ".join(peering_strs)
+    except Exception as e:
+        logger.warning(f"Error fetching peerings for VNet {vnet_name}: {str(e)}")
+        return "Error fetching peerings"
+
+def get_or_create_rir(nb, name, slug, description, is_private=False):
+    try:
+        rir = nb.ipam.rirs.get(slug=slug)
+        if rir:
+            logger.info(f"Found existing RIR: {name}")
+            return rir
+    except Exception as e:
+        logger.debug(f"Error getting RIR {name}: {str(e)}")
+    
+    logger.info(f"Creating new RIR: {name}")
+    return nb.ipam.rirs.create(
+        name=name,
+        slug=slug,
+        description=description,
+        is_private=is_private
+    )
+
+def get_or_create_aggregate(nb, prefix, rir_id, description, tags):
+    try:
+        aggregate = nb.ipam.aggregates.get(prefix=prefix)
+        if aggregate:
+            logger.info(f"Found existing aggregate: {prefix}")
+            return aggregate
+    except Exception as e:
+        logger.debug(f"Error getting aggregate {prefix}: {str(e)}")
+    
+    logger.info(f"Creating new aggregate: {prefix}")
+    return nb.ipam.aggregates.create(
+        prefix=prefix,
+        rir=rir_id,
+        description=description,
+        tags=tags
+    )
+
+def get_or_create_tag(nb, tag_name, tag_description=""):
+    slug = tag_name.lower().replace(" ", "-")
+    try:
+        tag = nb.extras.tags.get(slug=slug)
+        if tag:
+            logger.info(f"Found existing tag: {tag_name}")
+            return tag
+    except Exception as e:
+        logger.debug(f"Error getting tag {tag_name}: {str(e)}")
+    
+    logger.info(f"Creating new tag: {tag_name}")
+    return nb.extras.tags.create(
+        name=tag_name,
+        slug=slug,
+        description=tag_description
+    )
+
+def get_or_create_ipam_role(nb, name, slug, description, tags):
+    try:
+        role = nb.ipam.roles.get(slug=slug)
+        if role:
+            logger.info(f"Found existing IPAM role: {name}")
+            return role
+    except Exception as e:
+        logger.debug(f"Error getting IPAM role {name}: {str(e)}")
+    
+    logger.info(f"Creating new IPAM role: {name}")
+    tag_dicts = [{'id': get_or_create_tag(nb, t).id} for t in tags]
+    return nb.ipam.roles.create(
+        name=name,
+        slug=slug,
+        description=description,
+        tags=tag_dicts
+    )
+
+def get_or_create_tenant_group(nb, name, slug, description=""):
+    try:
+        group = nb.tenancy.tenant_groups.get(slug=slug)
+        if group:
+            logger.info(f"Found existing Tenant Group: {name}")
+            return group
+    except Exception as e:
+        logger.debug(f"Error getting Tenant Group {name}: {str(e)}")
+    
+    logger.info(f"Creating new Tenant Group: {name}")
+    return nb.tenancy.tenant_groups.create(
+        name=name,
+        slug=slug,
+        description=description
+    )
+
+def get_or_create_tenant(nb, name, group_id, description="", tags=None):
+    slug = name.lower().replace(' ', '-')  # Generate slug from name (UUID is already suitable)
+    try:
+        tenant = nb.tenancy.tenants.get(slug=slug)
+        if tenant:
+            needs_update = False
+            if tenant.group.id != group_id:
+                tenant.group = group_id
+                needs_update = True
+            if tenant.description != description:
+                tenant.description = description
+                needs_update = True
+            if tags and set(tag.id for tag in tenant.tags) != set(tag['id'] for tag in tags):
+                tenant.tags = tags
+                needs_update = True
+            if needs_update:
+                tenant.save()
+                logger.info(f"Updated Tenant: {name}")
+            else:
+                logger.info(f"Found existing Tenant: {name}")
+            return tenant
+    except RequestError as e:
+        logger.debug(f"Request error getting Tenant {name}: {str(e)}")
+    except Exception as e:
+        logger.debug(f"Error getting Tenant {name}: {str(e)}")
+    
+    logger.info(f"Creating new Tenant: {name} with slug {slug}")
+    try:
+        return nb.tenancy.tenants.create(
+            name=name,
+            slug=slug,  # Required field
+            group=group_id,
+            description=description,
+            tags=tags or []
+        )
+    except RequestError as e:
+        logger.error(f"Failed to create Tenant {name}: {str(e)}")
+        raise
+
+def get_or_create_custom_field(nb, field_name, field_type, field_description, object_types, field_choices=None):
+    try:
+        custom_field = nb.extras.custom_fields.get(name=field_name)
+        if custom_field:
+            logger.info(f"Found existing custom field: {field_name}")
+            return custom_field
+    except Exception as e:
+        logger.debug(f"Error getting custom field {field_name}: {str(e)}")
+
+    logger.info(f"Creating new custom field: {field_name}")
+    field_data = {
+        'name': field_name,
+        'label': field_name.replace('_', ' ').title(),
+        'type': field_type,
+        'description': field_description,
+        'object_types': object_types,
+        'required': False,
+        'default': None
+    }
+    if field_choices:
+        field_data['choices'] = field_choices
+
+    return nb.extras.custom_fields.create(**field_data)
+
+def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, subscription_id=None, aggregate_id=None, role_id=None, tenant_id=None, tags=None):
+    try:
+        existing_prefixes = nb.ipam.prefixes.filter(prefix=prefix_value)
+        
+        if existing_prefixes:
+            logger.info(f"Found existing prefix: {prefix_value}")
+            prefix = list(existing_prefixes)[0]
+            
+            needs_update = False
+            for key, value in defaults.items():
+                if key == 'parent':  
+                    continue
+                current_value = getattr(prefix, key, None)
+                if current_value != value:
+                    setattr(prefix, key, value)
+                    needs_update = True
+            
+            if subscription_name and subscription_id:
+                custom_fields = getattr(prefix, 'custom_fields', {}) or {}
+                azure_subscription_value = subscription_name
+                
+                existing_value = custom_fields.get('azure_subscription', '')
+                if existing_value != azure_subscription_value or re.search(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', existing_value, re.IGNORECASE):
+                    custom_fields['azure_subscription'] = azure_subscription_value
+                    custom_fields['azure_subscription_url'] = f"https://portal.azure.com/#@/subscription/{subscription_id}/overview"
+                    prefix.custom_fields = custom_fields
+                    needs_update = True
+                    logger.debug(f"Forced update of azure_subscription to clean value: {azure_subscription_value}")
+            
+            if aggregate_id and getattr(prefix, 'aggregate', None) != aggregate_id:
+                prefix.aggregate = aggregate_id
+                needs_update = True
+            
+            if role_id and getattr(prefix, 'role', None) != role_id:
+                prefix.role = role_id
+                needs_update = True
+            
+            if tenant_id and getattr(prefix, 'tenant', None) != tenant_id:
+                prefix.tenant = tenant_id
+                needs_update = True
+            
+            if tags and set(tag.id for tag in prefix.tags) != set(tag['id'] for tag in tags):
+                prefix.tags = tags
+                needs_update = True
+            
+            if needs_update:
+                prefix.save()
+                logger.info(f"Updated prefix: {prefix_value}")
+                
+            return prefix, False
+    except AttributeError as e:
+        logger.error(f"Attribute error when updating prefix {prefix_value}: {str(e)}")
+    except Exception as e:
+        logger.debug(f"Error checking for existing prefix {prefix_value}: {str(e)}")
+    
+    try:
+        logger.info(f"Creating new prefix: {prefix_value}")
+        
+        if subscription_name and subscription_id:
+            if 'custom_fields' not in defaults:
+                defaults['custom_fields'] = {}
+            defaults['custom_fields']['azure_subscription'] = subscription_name
+            defaults['custom_fields']['azure_subscription_url'] = f"https://portal.azure.com/#@/subscription/{subscription_id}/overview"
+        
+        if aggregate_id:
+            defaults['aggregate'] = aggregate_id
+        if role_id:
+            defaults['role'] = role_id
+        if tenant_id:
+            defaults['tenant'] = tenant_id
+        if tags:
+            defaults['tags'] = tags
+        
+        return nb.ipam.prefixes.create(
+            prefix=prefix_value,
+            **defaults
+        ), True
+    except RequestError as e:
+        if "Duplicate prefix found" in str(e):
+            logger.warning(f"Duplicate prefix found: {prefix_value}. Attempting to retrieve existing prefix.")
+            try:
+                existing_prefixes = nb.ipam.prefixes.filter(prefix=prefix_value)
+                if existing_prefixes:
+                    prefix = list(existing_prefixes)[0]
+                    logger.info(f"Retrieved existing prefix: {prefix_value}")
+                    return prefix, False
+            except Exception as inner_e:
+                logger.error(f"Error retrieving duplicate prefix {prefix_value}: {str(inner_e)}")
+        raise
+
+def setup_rirs_and_aggregates(nb, config):
+    rirs_config = config.get('rirs', [])
+    aggregates_config = config.get('aggregates', [])
+    
+    rir_map = {}
+    for rir in rirs_config:
+        created_rir = get_or_create_rir(
+            nb,
+            name=rir.get('name'),
+            slug=rir.get('slug'),
+            description=rir.get('description', ''),
+            is_private=rir.get('is_private', False)
+        )
+        rir_map[rir['name']] = created_rir.id
+    
+    aggregate_map = {}
+    for agg in aggregates_config:
+        rir_id = rir_map.get(agg.get('rir'))
+        if not rir_id:
+            logger.error(f"RIR {agg.get('rir')} not found for aggregate {agg.get('prefix')}")
+            continue
+        
+        agg_tags = []
+        agg_tag_names = []  # Store lowercase tag names for filtering
+        for tag_name in agg.get('tags', []):
+            tag = get_or_create_tag(nb, tag_name)
+            agg_tags.append({'id': tag.id})
+            agg_tag_names.append(tag_name.lower())
+        
+        created_agg = get_or_create_aggregate(
+            nb,
+            prefix=agg.get('prefix'),
+            rir_id=rir_id,
+            description=agg.get('description', ''),
+            tags=agg_tags
+        )
+        aggregate_map[agg.get('prefix')] = {
+            'id': created_agg.id,
+            'tags': agg_tags,
+            'tag_names': agg_tag_names,  # For efficient filter checks
+            'rir_id': rir_id
+        }
+    
+    return aggregate_map
+
+def setup_ipam_roles(nb, config):
+    roles_config = config.get('ipam_roles', [])
+    role_map = {}
+    
+    for role in roles_config:
+        role_tags = []
+        for tag_name in role.get('tags', []):
+            tag = get_or_create_tag(nb, tag_name)
+            role_tags.append({'id': tag.id})
+        
+        created_role = get_or_create_ipam_role(
+            nb,
+            name=role.get('name'),
+            slug=role.get('slug'),
+            description=role.get('description', ''),
+            tags=role_tags
+        )
+        role_map[role['name']] = {
+            'id': created_role.id,
+            'tags': role_tags,
+            'match_criteria': role.get('match_criteria', '')
+        }
+    
+    return role_map
+
+def setup_tenancy(nb, config, all_network_data):
+    tenancy_config = config.get('tenancy', {})
+    groups_config = tenancy_config.get('groups', [])
+    
+    group_map = {}
+    for group in groups_config:
+        created_group = get_or_create_tenant_group(
+            nb,
+            name=group.get('name'),
+            slug=group.get('slug'),
+            description=group.get('description', '')
+        )
+        group_map[group['name']] = created_group.id
+    
+    default_group_name = tenancy_config.get('default_group', 'AZURE')
+    default_group_id = group_map.get(default_group_name)
+    if not default_group_id:
+        logger.error(f"Default Tenant Group {default_group_name} not found")
+        return {}, ''
+    
+    tenant_tag_names = tenancy_config.get('tenant_tags', [])
+    tenant_tags = [{'id': get_or_create_tag(nb, t).id} for t in tenant_tag_names]
+    
+    tenant_map = {}
+    for sub_data in all_network_data:
+        sub_id = sub_data['subscription_id']
+        sub_name = sub_data['subscription_name']
+        
+        created_tenant = get_or_create_tenant(
+            nb,
+            name=sub_id,
+            group_id=default_group_id,
+            description=sub_name,
+            tags=tenant_tags
+        )
+        tenant_map[sub_id] = {
+            'id': created_tenant.id,
+            'tags': tenant_tags
+        }
+        logger.info(f"Processed Tenant for subscription {sub_id}: {sub_name}")
+    
+    return tenant_map, tenancy_config.get('aggregate_tag_filter', '')
+
+def setup_custom_fields(nb, config):
+    logger.info("Setting up custom fields for Azure integration")
+    custom_fields_config = config.get('custom_fields', {})
+    
+    try:
+        if custom_fields_config.get('azure_subscription', {}).get('enabled', True):
+            get_or_create_custom_field(
+                nb,
+                field_name="azure_subscription",
+                field_type=custom_fields_config.get('azure_subscription', {}).get('field_type', 'text'),
+                field_description=custom_fields_config.get('azure_subscription', {}).get('description', "Azure subscription name"),
+                object_types=["ipam.prefix"]
+            )
+        
+        if custom_fields_config.get('azure_subscription_url', {}).get('enabled', True):
+            get_or_create_custom_field(
+                nb,
+                field_name="azure_subscription_url",
+                field_type=custom_fields_config.get('azure_subscription_url', {}).get('field_type', 'url'),
+                field_description=custom_fields_config.get('azure_subscription_url', {}).get('description', "Direct link to Azure subscription portal"),
+                object_types=["ipam.prefix"]
+            )
+        
+        # New: Peering check custom field
+        peering_config = config.get('peering', {})
+        if peering_config.get('enabled', True):
+            get_or_create_custom_field(
+                nb,
+                field_name="Peering check",
+                field_type="text",
+                field_description="VNet peering status summary",
+                object_types=["ipam.prefix"]
+            )
+        
+        logger.info("Custom fields setup completed")
+    except Exception as e:
+        logger.error(f"Error setting up custom fields: {str(e)}")
+
+def sync_to_netbox(all_network_data, netbox_url, netbox_token, config):
+    logger.info(f"Syncing data to Netbox at {netbox_url}")
+    
+    session = requests.Session()
+    session.verify = config.get('ssl', {}).get('verify', True)
+    session.timeout = config.get('timeouts', {}).get('netbox_api', 30)
+    
+    nb = api(netbox_url, token=netbox_token)
+    nb.http_session = session
+    
+    setup_custom_fields(nb, config)
+    
+    aggregate_map = setup_rirs_and_aggregates(nb, config)
+    role_map = setup_ipam_roles(nb, config)
+    tenant_map, aggregate_tag_filter = setup_tenancy(nb, config, all_network_data)
+    
+    sync_tag_config = config.get('tags', {}).get('sync_tag', {})
+    azure_tag = get_or_create_tag(
+        nb,
+        tag_name=sync_tag_config.get('name', "azure-sync"),
+        tag_description=sync_tag_config.get('description', "Synced from Azure")
+    )
+    azure_tag_dict = [{'id': azure_tag.id}]
+    
+    additional_tags = []
+    for tag_name in config.get('tags', {}).get('additional_tags', []):
+        tag = get_or_create_tag(nb, tag_name)
+        additional_tags.append({'id': tag.id})
+    
+    for subscription_data in all_network_data:
+        subscription_id = subscription_data['subscription_id']
+        subscription_name = subscription_data['subscription_name']
+        
+        matching_role = None
+        for role_name, role_data in role_map.items():
+            criteria = role_data['match_criteria'].lower()
+            if criteria in subscription_name.lower():
+                matching_role = role_data
+                logger.debug(f"Matched subscription {subscription_name} to role {role_name}")
+                break
+        
+        role_id = matching_role['id'] if matching_role else None
+        
+        tenant_data = tenant_map.get(subscription_id)
+        tenant_id = tenant_data['id'] if tenant_data else None
+        
+        # New: Network client for peering fetches (per subscription)
+        network_client = NetworkManagementClient(credential, subscription_id)
+        
+        for vnet in subscription_data['vnets']:
+            address_spaces = vnet['address_space']
+            if not address_spaces:
+                logger.warning(f"Skipping VNet {vnet['name']} (no address spaces)")
+                continue
+            
+            logger.info(f"Processing VNet {vnet['name']} with {len(address_spaces)} address spaces")
+            
+            # New: Fetch peerings once per VNet
+            peering_check = get_vnet_peerings(network_client, vnet['resource_group'], vnet['name'], config)
+            logger.debug(f"Peering check for VNet {vnet['name']}: {peering_check}")
+            
+            for idx, address_space in enumerate(address_spaces, 1):
+                logger.debug(f"Syncing address space {idx}/{len(address_spaces)} for VNet {vnet['name']}: {address_space}")
+                
+                matching_aggregate = None
+                try:
+                    prefix_net = ipaddress.ip_network(address_space, strict=False)
+                    for agg_prefix, agg_data in aggregate_map.items():
+                        agg_net = ipaddress.ip_network(agg_prefix, strict=False)
+                        if prefix_net.subnet_of(agg_net):
+                            matching_aggregate = agg_data
+                            logger.debug(f"Matched address space {address_space} to aggregate {agg_prefix}")
+                            break
+                except ValueError as e:
+                    logger.warning(f"Invalid IP network for {address_space}: {str(e)}")
+                    continue
+                
+                aggregate_id = matching_aggregate['id'] if matching_aggregate else None
+                
+                assign_tenant = True
+                if aggregate_tag_filter:
+                    if not matching_aggregate:
+                        assign_tenant = False
+                        logger.debug(f"Skipping tenant assignment for {address_space} (no aggregate matched and filter is set)")
+                    else:
+                        agg_tag_names = matching_aggregate.get('tag_names', [])
+                        if aggregate_tag_filter.lower() not in agg_tag_names:
+                            assign_tenant = False
+                            logger.debug(f"Skipping tenant assignment for {address_space} (aggregate lacks tag '{aggregate_tag_filter}')")
+                
+                prefix_tags = azure_tag_dict + additional_tags
+                if matching_aggregate:
+                    prefix_tags += matching_aggregate['tags']
+                if matching_role:
+                    prefix_tags += matching_role['tags']
+                
+                # Build defaults with peering check
+                prefix_defaults = {
+                    'description': f"Azure VNet: {vnet['name']} (Subscription: {subscription_id}) - Address Space {idx}",
+                    'status': 'active',
+                    'tags': prefix_tags
+                }
+                if 'custom_fields' not in prefix_defaults:
+                    prefix_defaults['custom_fields'] = {}
+                prefix_defaults['custom_fields']['Peering check'] = peering_check
+                
+                vnet_prefix, created = get_or_create_prefix(
+                    nb,
+                    address_space,
+                    prefix_defaults,
+                    subscription_name=subscription_name,
+                    subscription_id=subscription_id,
+                    aggregate_id=aggregate_id,
+                    role_id=role_id,
+                    tenant_id=tenant_id if assign_tenant else None,
+                    tags=prefix_tags
+                )
+                
+                action = "Created" if created else "Updated"
+                logger.info(f"{action} prefix for VNet {vnet['name']} address space {idx}: {address_space} (Aggregate: {aggregate_id if aggregate_id else 'None'}, Role: {role_id if role_id else 'None'}, Tenant: {tenant_id if tenant_id else 'None'})")
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(description='Sync Azure network data to Netbox')
+    parser.add_argument('--netbox-url', help='Netbox URL')
+    parser.add_argument('--netbox-token', help='Netbox API token')
+    parser.add_argument('--auth-method', help='Azure auth method (default, interactive)')
+    parser.add_argument('--subscription-id', help='Specific Azure subscription ID to process')
+    parser.add_argument('--management-group-id', help='Azure Management Group ID')
+    parser.add_argument('--management-group-name', help='Azure Management Group name')
+    parser.add_argument('--azure-client-id', help='Azure Service Principal Client ID (appId)')
+    parser.add_argument('--azure-client-secret', help='Azure Service Principal Client Secret')
+    parser.add_argument('--azure-tenant-id', help='Azure Tenant ID')
+    return parser.parse_args()
+
+def main():
+    config = load_config_yaml()
+    
+    args = parse_arguments()
+    
+    netbox_url = args.netbox_url or config.get('netbox', {}).get('url')
+    netbox_token = args.netbox_token or config.get('netbox', {}).get('token')
+    
+    if not netbox_url or not netbox_token:
+        logger.error("Netbox URL and token must be provided either as arguments or in config.yaml")
+        sys.exit(1)
+    
+    log_level = config.get('logging', {}).get('level', 'DEBUG')
+    log_format = config.get('logging', {}).get('format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logging.basicConfig(level=log_level, format=log_format)
+    
+    filters = config.get('filters', {})
+    if filters.get('regions', {}).get('include'):
+        logger.warning("Region include filters set but not implemented yet")
+    
+    try:
+        logger.info("Starting Azure to Netbox sync")
+        
+        credential = get_azure_credentials(config, args)
+        
+        process_all = config.get('azure', {}).get('subscriptions', {}).get('process_all', True)
+        specific_id = args.subscription_id or config.get('azure', {}).get('subscriptions', {}).get('specific_id')
+        mg_id = args.management_group_id or config.get('azure', {}).get('subscriptions', {}).get('management_group', {}).get('id')
+        mg_name = args.management_group_name or config.get('azure', {}).get('subscriptions', {}).get('management_group', {}).get('name')
+        
+        if mg_id or mg_name:
+            subscriptions = get_management_group_subscriptions(credential, mg_id, mg_name)
+            if not subscriptions:
+                logger.error("No subscriptions found in the specified management group")
+                sys.exit(1)
+        elif specific_id:
+            logger.info(f"Processing only subscription {specific_id}")
+            sub_client = SubscriptionClient(credential)
+            try:
+                sub_details = sub_client.subscriptions.get(specific_id)
+                real_display_name = sub_details.display_name
+                logger.info(f"Retrieved real display name for subscription {specific_id}: {real_display_name}")
+            except Exception as e:
+                logger.warning(f"Could not retrieve display name for {specific_id}: {str(e)}. Using fallback.")
+                real_display_name = f"Subscription {specific_id}"
+            subscriptions = [type('obj', (object,), {
+                'subscription_id': specific_id,
+                'display_name': real_display_name
+            })]
+        elif process_all:
+            subscriptions = get_azure_subscriptions(credential)
+        else:
+            logger.error("No subscription processing method specified")
+            sys.exit(1)
+        
+        all_network_data = []
+        
+        for subscription in subscriptions:
+            subscription_id = subscription.subscription_id
+            subscription_data = {
+                'subscription_id': subscription_id,
+                'subscription_name': subscription.display_name,
+                'vnets': []
+            }
+            
+            vnets_data = get_vnets_and_subnets(subscription_id, credential)
+            subscription_data['vnets'] = vnets_data
+            all_network_data.append(subscription_data)
+        
+        sync_to_netbox(all_network_data, netbox_url, netbox_token, config)
+        
+        logger.info("Azure to Netbox sync completed successfully")
+        
+    except Exception as e:
+        logger.error(f"Error during Azure to Netbox sync: {str(e)}", exc_info=True)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
+```
+
+### Testing Notes
+- **Peering Fetch**: Requires Azure permissions for Virtual Network Peerings (e.g., "Network Contributor" role on the SPN).
+- **Example Output in Custom Field**: For a VNet with peerings "peer1" (FullySynchronized, Connected) and "peer2" (PartiallySynchronized, Disconnected): "name: peer1 - FullySynchronized ok - Peering state Connected ok; name: peer2 - PartiallySynchronized ko - Peering state Disconnected ko".
+- **Logs**: Look for "Peering check for VNet X: Y" to see the formatted string.
+- **In NetBox**: Check the prefix's custom fields for "Peering check"—it should match the format.
+- **If No Peerings**: Sets "No peerings" (customizable).
+
+Test this and confirm if the "Peering check" field populates correctly for your VNets. If the peering data isn't fetching (e.g., permission error), share the log, and we'll adjust. What's next? 🚀
