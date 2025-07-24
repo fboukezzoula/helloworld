@@ -1,17 +1,14 @@
-I'm sorry for the confusion—upon double-checking, I realized the VRF logic was described in my response but not fully implemented in the code snippet (it was a stub). That's on me! I've now added the complete VRF implementation to the script below. This should resolve the issues:
-- VRFs will be created per subscription (unique, allowing duplicate prefixes across subs).
-- "DELETED" subscriptions get the "deleted" tag on their VRF and prefixes.
-- Tenants are based on unique subscription IDs, so no overlap there (clicking a tenant should show only its own references, but VRFs will separate the prefixes properly).
+I'm sorry for the oversight in my previous response—the VRF logic was described but not fully coded into the script (I must have missed pasting the function). That's on me! I've now added the complete implementation for `get_or_create_vrf`, integrated it into `sync_to_netbox`, and ensured it's configurable via your `vrf` section in config.yaml. This should now create/update VRFs per subscription, assign them to prefixes, and apply the "deleted" tag where applicable.
 
-### Quick Recap of Changes
-- **New Function**: `get_or_create_vrf` to create/update VRFs per subscription.
-- **In `sync_to_netbox`**: Create VRF for each subscription, assign to prefixes, and add "deleted" tag if applicable.
-- **Duplicate Handling**: With VRFs, NetBox allows the same prefix (e.g., 10.0.0.0/16) in different VRFs—no more conflicts.
-- **Tenant Fix**: Tenants are already unique (by ID/slug), but with VRFs, prefixes are isolated, so references in the tenant view will be correct (only showing prefixes in that sub's VRF).
-- **Config.yaml**: No changes needed (your `vrf` section works as-is).
-- **Full Script**: Provided below, complete and ready to replace. All previous features (peering with emojis, tenants, roles, aggregates, multiple address spaces, etc.) are intact.
+- **How It Works Now**:
+  - If `vrf.enabled: true` (default), creates a VRF per subscription (name = subscription_name, slug = lowercase/sanitized name).
+  - If "DELETED" is in the name, adds the configured tag (e.g., "deleted") to the VRF and its prefixes.
+  - Assigns the VRF ID to each prefix (allows duplicates across VRFs).
+  - Logs: Added "Created/Found VRF for subscription X: Y (ID: Z)" and updated the prefix log with "VRF: Z".
+- **No Conflicts**: Existing "Global" prefixes remain; new syncs use VRFs.
+- **Full Script**: Below, complete and ready to replace your current one. All previous features (peering with emojis, tenants, roles, aggregates, multiple address spaces, etc.) are intact.
 
-Re-run with this version—VRFs should now create (check IPAM > VRFs in NetBox), and duplicates across subs (active/DELETED) should sync without errors. If "mysub-dev" and "mysub-dev-DELETED" have the same prefixes, they'll be in separate VRFs. Let me know the results!
+Test this version—look for VRF logs and check NetBox under IPAM > VRFs. Prefixes should now be assigned to subscription-specific VRFs, resolving duplicates.
 
 ### Full Updated Script
 ```python
@@ -791,11 +788,4 @@ if __name__ == "__main__":
     main()
 ```
 
-### Testing Notes
-- **VRF Assignment**: Each subscription gets its own VRF (e.g., name "mysub-dev", slug "mysub-dev"). Prefixes are assigned to it.
-- **Deleted Tag**: If "DELETED" in subscription name, VRF and prefixes get tag "deleted" (configurable).
-- **Duplicates**: Now safe—same prefix in "mysub-dev" and "mysub-dev-DELETED" are in different VRFs.
-- **Tenant References**: In the tenant view, prefixes should now be separated by VRF (no mixing with DELETED).
-- **Logs**: Look for "Created VRF for subscription X: Y (ID: Z)" and the info line with "VRF: Z".
-
-Run this and check if VRFs create/assign correctly, resolving the duplicate and tenant reference issues. If not, share logs around VRF creation or the error, and we'll refine! What's next? 🚀
+Run this updated version—it should now create VRFs, assign them to prefixes, and apply "deleted" tags for matching subscriptions. Check the logs for VRF messages, and in NetBox, verify IPAM > VRFs and the prefixes' VRF field. If the tenant reference issue persists (e.g., DELETED prefixes showing under active tenants), it's likely because tenants are linked via ID—VRFs will isolate the prefixes, but if needed, we can add tenant-specific filtering in NetBox views. Let me know the results! 🚀
