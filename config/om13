@@ -1,16 +1,41 @@
+#!/usr/bin/env python3
+
+import re
+import logging
+import sys
+from azure.identity import DefaultAzureCredential
+from azure.mgmt.subscription import SubscriptionClient
+from azure.mgmt.network import NetworkManagementClient
+import pynetbox
+
+# Setup logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# CONFIGURATION (replace with your actual values or load from config)
+NETBOX_URL = "https://your-netbox.example.com"
+NETBOX_TOKEN = "your-netbox-token"
+VRF_DELETED_TAG = "DELETED"  # Tag to use for deleted subscriptions
+
+def sanitize_slug(text):
+    return re.sub(r'[^a-z0-9-]', '-', text.lower())
+
+def get_or_create_tag(nb, tag_name):
+    slug = sanitize_slug(tag_name)
+    tag = nb.extras.tags.get(slug=slug)
+    if tag:
+        return tag
+    return nb.extras.tags.create(name=tag_name, slug=slug)
+
 def get_or_create_vrf(nb, name, subscription_id, description="", tags=None, enforce_unique=False):
-    # Make both name and slug unique by appending the subscription ID
-    sanitized_id = re.sub(r'[^a-z0-9-]', '-', subscription_id.lower())
-    slug = f"{re.sub(r'[^a-z0-9-]', '-', name.lower())}-{sanitized_id}"
+    sanitized_id = sanitize_slug(subscription_id)
+    slug = f"{sanitize_slug(name)}-{sanitized_id}"
     unique_name = f"{name} ({subscription_id})"
-    try:
-        vrf = nb.ipam.vrfs.get(slug=slug)
-        if vrf:
-            # ... update logic ...
-            return vrf
-    except Exception as e:
-        logger.debug(f"Error getting VRF for {name}: {str(e)}")
-    logger.info(f"Creating new VRF for subscription {name} with slug {slug}")
+    vrf = nb.ipam.vrfs.get(slug=slug)
+    if vrf:
+        logger.info(f"Found existing VRF: {unique_name} (slug: {slug}, id: {vrf.id})")
+        return vrf
+    logger.info(f"Creating VRF: {unique_name} (slug: {slug})")
     return nb.ipam.vrfs.create(
         name=unique_name,
         slug=slug,
@@ -18,3 +43,48 @@ def get_or_create_vrf(nb, name, subscription_id, description="", tags=None, enfo
         tags=tags or [],
         enforce_unique=enforce_unique
     )
+
+def main():
+    # Authenticate to Azure
+    credential = DefaultAzureCredential()
+    sub_client = SubscriptionClient(credential)
+
+    # Authenticate to NetBox
+    nb = pynetbox.api(NETBOX_URL, token=NETBOX_TOKEN)
+
+    # Get all subscriptions
+    subscriptions = list(sub_client.subscriptions.list())
+    logger.info(f"Found {len(subscriptions)} subscriptions.")
+
+    for subscription in subscriptions:
+        sub_id = subscription.subscription_id
+        sub_name = subscription.display_name
+
+        # Check if this is a "DELETED" subscription
+        is_deleted = "DELETED" in sub_name.upper()
+        tags = []
+        if is_deleted:
+            deleted_tag = get_or_create_tag(nb, VRF_DELETED_TAG)
+            tags.append({'id': deleted_tag.id})
+
+        # Create or get VRF
+        vrf = get_or_create_vrf(
+            nb,
+            name=sub_name,
+            subscription_id=sub_id,
+            description=f"VRF for Azure subscription {sub_id}",
+            tags=tags,
+            enforce_unique=False
+        )
+
+        # Example: Print VRF info
+        logger.info(f"VRF for subscription '{sub_name}': name='{vrf.name}', slug='{vrf.slug}', id={vrf.id}")
+
+        # ... (You can continue with prefix creation, etc.)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        logger.error(f"Error during Azure to Netbox sync: {e}", exc_info=True)
+        sys.exit(1)
