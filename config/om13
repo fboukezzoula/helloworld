@@ -1,0 +1,20 @@
+def get_or_create_vrf(nb, name, subscription_id, description="", tags=None, enforce_unique=False):
+    # Make both name and slug unique by appending the subscription ID
+    sanitized_id = re.sub(r'[^a-z0-9-]', '-', subscription_id.lower())
+    slug = f"{re.sub(r'[^a-z0-9-]', '-', name.lower())}-{sanitized_id}"
+    unique_name = f"{name} ({subscription_id})"
+    try:
+        vrf = nb.ipam.vrfs.get(slug=slug)
+        if vrf:
+            # ... update logic ...
+            return vrf
+    except Exception as e:
+        logger.debug(f"Error getting VRF for {name}: {str(e)}")
+    logger.info(f"Creating new VRF for subscription {name} with slug {slug}")
+    return nb.ipam.vrfs.create(
+        name=unique_name,
+        slug=slug,
+        description=description,
+        tags=tags or [],
+        enforce_unique=enforce_unique
+    )
