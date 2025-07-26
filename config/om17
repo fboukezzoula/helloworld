@@ -264,7 +264,8 @@ def get_or_create_ipam_role(nb, name, slug, description, tags):
         logger.debug(f"Error getting IPAM role {name}: {str(e)}")
     
     logger.info(f"Creating new IPAM role: {name}")
-    tag_dicts = [{'id': t.id} for t in tags if t]  # Filter out None
+    # Assume tags is already a list of dicts like [{'id': id}]
+    tag_dicts = [t for t in tags if isinstance(t, dict) and 'id' in t]  # Filter valid dicts
     return nb.ipam.roles.create(
         name=name,
         slug=slug,
