@@ -212,13 +212,15 @@ def get_or_create_tag(nb, tag_input, tag_description="", tag_color="aaaaaa"):
         logger.debug("Tag input is a dict; extracting properties.")
         tag_name = tag_input.get('name')
         if not tag_name:
-            raise ValueError("Tag dict missing 'name' key.")
+            logger.error("Tag dict missing 'name' key; skipping this tag.")
+            return None  # Skip instead of raising to prevent crash
         tag_description = tag_input.get('description', tag_description)
         tag_color = tag_input.get('color', tag_color)
     elif isinstance(tag_input, str):
         tag_name = tag_input
     else:
-        raise ValueError(f"Invalid tag_input: {tag_input}. Must be a string or dict with 'name' key.")
+        logger.error(f"Invalid tag_input type: {type(tag_input)}. Must be str or dict; skipping.")
+        return None
 
     slug = tag_name.lower().replace(" ", "-")
     try:
@@ -241,12 +243,16 @@ def get_or_create_tag(nb, tag_input, tag_description="", tag_color="aaaaaa"):
         logger.debug(f"Error getting tag {tag_name}: {str(e)}")
     
     logger.info(f"Creating new tag: {tag_name} (color: {tag_color})")
-    return nb.extras.tags.create(
-        name=tag_name,
-        slug=slug,
-        description=tag_description,
-        color=tag_color
-    )
+    try:
+        return nb.extras.tags.create(
+            name=tag_name,
+            slug=slug,
+            description=tag_description,
+            color=tag_color
+        )
+    except Exception as e:
+        logger.error(f"Failed to create tag {tag_name}: {str(e)}")
+        return None
 
 def get_or_create_ipam_role(nb, name, slug, description, tags):
     try:
@@ -258,7 +264,7 @@ def get_or_create_ipam_role(nb, name, slug, description, tags):
         logger.debug(f"Error getting IPAM role {name}: {str(e)}")
     
     logger.info(f"Creating new IPAM role: {name}")
-    tag_dicts = [{'id': get_or_create_tag(nb, t).id} for t in tags]
+    tag_dicts = [{'id': t.id} for t in tags if t]  # Filter out None
     return nb.ipam.roles.create(
         name=name,
         slug=slug,
@@ -461,8 +467,9 @@ def setup_rirs_and_aggregates(nb, config):
         agg_tag_names = []  # Store lowercase tag names for filtering
         for tag_item in agg.get('tags', []):
             tag = get_or_create_tag(nb, tag_item)
-            agg_tags.append({'id': tag.id})
-            agg_tag_names.append(tag.name.lower())
+            if tag:
+                agg_tags.append({'id': tag.id})
+                agg_tag_names.append(tag.name.lower())
         
         created_agg = get_or_create_aggregate(
             nb,
@@ -488,7 +495,8 @@ def setup_ipam_roles(nb, config):
         role_tags = []
         for tag_item in role.get('tags', []):
             tag = get_or_create_tag(nb, tag_item)
-            role_tags.append({'id': tag.id})
+            if tag:
+                role_tags.append({'id': tag.id})
         
         created_role = get_or_create_ipam_role(
             nb,
@@ -529,7 +537,8 @@ def setup_tenancy(nb, config, all_network_data):
     tenant_tags = []
     for t in tenant_tag_names:
         tag = get_or_create_tag(nb, t)
-        tenant_tags.append({'id': tag.id})
+        if tag:
+            tenant_tags.append({'id': tag.id})
     
     tenant_map = {}
     for sub_data in all_network_data:
@@ -616,7 +625,9 @@ def setup_custom_tags(nb, config):
             logger.warning(f"Invalid color '{color}' for tag '{name}'; using default")
             color = "aaaaaa"
 
-        get_or_create_tag(nb, {'name': name, 'description': description, 'color': color})
+        tag = get_or_create_tag(nb, {'name': name, 'description': description, 'color': color})
+        if not tag:
+            logger.warning(f"Failed to process custom tag '{name}'")
 
     logger.info("Custom tags setup completed")
 
@@ -643,13 +654,18 @@ def sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credentia
         tag_input=sync_tag_config.get('name', "azure-sync"),
         tag_description=sync_tag_config.get('description', "Synced from Azure")
     )
-    azure_tag_dict = [{'id': azure_tag.id}]
+    if not azure_tag:
+        logger.error("Failed to create/get azure-sync tag; continuing without it.")
+        azure_tag_dict = []
+    else:
+        azure_tag_dict = [{'id': azure_tag.id}]
     
     additional_tags = []
     additional_tag_configs = config.get('tags', {}).get('additional_tags', [])
     for tag_item in additional_tag_configs:
         tag = get_or_create_tag(nb, tag_item)
-        additional_tags.append({'id': tag.id})
+        if tag:
+            additional_tags.append({'id': tag.id})
     
     for subscription_data in all_network_data:
         subscription_id = subscription_data['subscription_id']
