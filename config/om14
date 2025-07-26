@@ -1,44 +1,206 @@
-Absolutely! You can **define tags (with colors) in your `config.yaml`** and have your script create them in NetBox with the specified color.  
-NetBox tags support a `color` field (hex code, e.g. `ff0000` for red, `00ff00` for green, etc).
+Absolutely! Here is your **updated script** with the following improvements:
+
+1. **Tags with Colors from config.yaml:**  
+   - You can now define tags (with color and description) in your `config.yaml` under `tags: custom_tags:`.
+   - The script will create/update these tags in NetBox at startup, using the specified color.
+
+2. **Updated `get_or_create_tag` function:**  
+   - Now supports a `color` parameter and updates the tag if the color or description changes.
+
+3. **New `create_tags_from_config` function:**  
+   - Reads your custom tags from config and ensures they exist in NetBox.
+
+4. **All other logic is preserved, including skipping "DELETED" subscriptions.**
 
 ---
 
-## **How to Do It**
-
-### 1. **Define Tags in `config.yaml`**
-
-Add a section like this to your `config.yaml`:
+## **Example config.yaml section**
 
 ```yaml
 tags:
   custom_tags:
     - name: "Production"
       description: "Production environment"
-      color: "ff0000"   # Red
+      color: "ff0000"
     - name: "Development"
       description: "Development environment"
-      color: "00ff00"   # Green
+      color: "00ff00"
     - name: "Azure"
       description: "Azure imported"
-      color: "0078d4"   # Azure blue
+      color: "0078d4"
     - name: "DELETED"
       description: "Deleted subscription"
-      color: "808080"   # Grey
+      color: "808080"
+  # You can still use sync_tag/additional_tags as before
+  sync_tag:
+    name: "azure-sync"
+    description: "Synced from Azure"
+    color: "0078d4"
+  additional_tags:
+    - "Production"
+    - "Azure"
 ```
 
 ---
 
-### 2. **Update Your Script to Create Tags with Colors**
-
-Update your `get_or_create_tag` function to accept and use the `color` parameter:
+## **Full Updated Script**
 
 ```python
+#!/usr/bin/env python3
+
+import os
+import sys
+import logging
+import argparse
+from pathlib import Path
+import yaml
+import re
+import ipaddress
+from azure.identity import DefaultAzureCredential, InteractiveBrowserCredential, ClientSecretCredential
+from azure.mgmt.subscription import SubscriptionClient
+from azure.mgmt.network import NetworkManagementClient
+from azure.mgmt.managementgroups import ManagementGroupsAPI
+from pynetbox import api
+from pynetbox.core.query import RequestError
+import requests
+
+# Default logging config (can be overridden by YAML or CLI)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+def load_config_yaml(config_path='config.yaml'):
+    config = {}
+    config_file = Path(config_path)
+    if config_file.exists():
+        try:
+            with open(config_file, 'r') as f:
+                config = yaml.safe_load(f)
+            logger.info(f"Loaded configuration from {config_path}")
+        except yaml.YAMLError as e:
+            logger.error(f"Error parsing {config_path}: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error loading {config_path}: {str(e)}")
+    else:
+        logger.info(f"No {config_path} found; using defaults and CLI args")
+    return config
+
+def get_azure_credentials(config, args):
+    auth_method = args.auth_method or config.get('azure', {}).get('authentication', {}).get('method', 'default')
+    client_id = args.azure_client_id or config.get('azure', {}).get('authentication', {}).get('client_id')
+    client_secret = args.azure_client_secret or config.get('azure', {}).get('authentication', {}).get('client_secret')
+    tenant_id = args.azure_tenant_id or config.get('azure', {}).get('authentication', {}).get('tenant_id')
+    if client_id and client_secret and tenant_id:
+        logger.info("Using Azure Service Principal authentication")
+        return ClientSecretCredential(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret
+        )
+    elif auth_method == 'interactive':
+        logger.info("Using interactive browser authentication for Azure")
+        return InteractiveBrowserCredential()
+    else:
+        logger.info("Using default Azure credential chain")
+        return DefaultAzureCredential()
+
+def get_management_group_subscriptions(credential, management_group_id=None, management_group_name=None):
+    logger.info("Getting subscriptions from management group")
+    try:
+        mg_client = ManagementGroupsAPI(credential)
+        if management_group_name and not management_group_id:
+            logger.info(f"Looking for management group with name: {management_group_name}")
+            management_groups = mg_client.management_groups.list()
+            for mg in management_groups:
+                if mg.display_name == management_group_name:
+                    management_group_id = mg.name
+                    logger.info(f"Found management group ID: {management_group_id}")
+                    break
+            if not management_group_id:
+                logger.error(f"Management group with name '{management_group_name}' not found")
+                return []
+        mg_details = mg_client.management_groups.get(
+            group_id=management_group_id,
+            expand="children",
+            recurse=True
+        )
+        subscriptions = []
+        def extract_subscriptions(mg_node):
+            if hasattr(mg_node, 'children') and mg_node.children:
+                for child in mg_node.children:
+                    if child.type == "/subscriptions":
+                        subscription_info = type('obj', (object,), {
+                            'subscription_id': child.name,
+                            'display_name': child.display_name
+                        })
+                        subscriptions.append(subscription_info)
+                        logger.info(f"Found subscription: {child.display_name} ({child.name})")
+                    elif child.type == "/providers/Microsoft.Management/managementGroups":
+                        extract_subscriptions(child)
+        extract_subscriptions(mg_details)
+        logger.info(f"Found {len(subscriptions)} subscriptions in management group")
+        return subscriptions
+    except Exception as e:
+        logger.error(f"Error getting subscriptions from management group: {str(e)}")
+        return []
+
+def get_azure_subscriptions(credential):
+    logger.info("Getting Azure subscriptions")
+    subscription_client = SubscriptionClient(credential)
+    subscriptions = list(subscription_client.subscriptions.list())
+    logger.info(f"Found {len(subscriptions)} subscriptions")
+    return subscriptions
+
+def get_vnets_and_subnets(subscription_id, credential):
+    logger.info(f"Getting VNets for subscription {subscription_id}")
+    network_client = NetworkManagementClient(credential, subscription_id)
+    vnets = list(network_client.virtual_networks.list_all())
+    logger.info(f"Found {len(vnets)} VNets in subscription {subscription_id}")
+    vnet_data = []
+    for vnet in vnets:
+        address_spaces = [prefix for prefix in vnet.address_space.address_prefixes if prefix]
+        logger.debug(f"VNet {vnet.name} has {len(address_spaces)} address spaces: {address_spaces}")
+        vnet_info = {
+            'name': vnet.name,
+            'id': vnet.id,
+            'resource_group': vnet.id.split('/')[4],
+            'location': vnet.location,
+            'address_space': address_spaces
+        }
+        vnet_data.append(vnet_info)
+    return vnet_data
+
+def get_vnet_peerings(network_client, resource_group, vnet_name, config):
+    peering_config = config.get('peering', {})
+    if not peering_config.get('enabled', True):
+        return "Peering check disabled"
+    ok_value = peering_config.get('ok_value', '✅')
+    ko_value = peering_config.get('ko_value', '❌')
+    no_peerings = peering_config.get('no_peerings_value', 'No peerings')
+    try:
+        peerings = list(network_client.virtual_network_peerings.list(resource_group, vnet_name))
+        if not peerings:
+            return no_peerings
+        peering_strs = []
+        for peering in peerings:
+            sync_status = peering.peering_sync_level if hasattr(peering, 'peering_sync_level') else 'Unknown'
+            state = peering.peering_state if hasattr(peering, 'peering_state') else 'Unknown'
+            logger.debug(f"Raw sync_status for {peering.name}: {sync_status}, state: {state}")
+            sync_ok = ok_value if sync_status == 'FullyInSync' else ko_value
+            state_ok = ok_value if state == 'Connected' else ko_value
+            peering_strs.append(f"name: {peering.name} - {sync_status} {sync_ok} - Peering state {state} {state_ok}")
+        return "; ".join(peering_strs)
+    except Exception as e:
+        logger.warning(f"Error fetching peerings for VNet {vnet_name}: {str(e)}")
+        return "Error fetching peerings"
+
 def get_or_create_tag(nb, tag_name, tag_description="", color=None):
     slug = tag_name.lower().replace(" ", "-")
     try:
         tag = nb.extras.tags.get(slug=slug)
         if tag:
-            # Update color/description if changed
             needs_update = False
             if color and tag.color != color:
                 tag.color = color
@@ -61,15 +223,7 @@ def get_or_create_tag(nb, tag_name, tag_description="", color=None):
         description=tag_description,
         color=color or "ffffff"
     )
-```
 
----
-
-### 3. **Create Tags from Config at Startup**
-
-Add this to your `main()` (or before you start syncing), to ensure all tags are created:
-
-```python
 def create_tags_from_config(nb, config):
     tags_config = config.get('tags', {}).get('custom_tags', [])
     for tag_def in tags_config:
@@ -79,32 +233,129 @@ def create_tags_from_config(nb, config):
             tag_description=tag_def.get('description', ''),
             color=tag_def.get('color', 'ffffff')
         )
+
+# ... (rest of your functions remain unchanged) ...
+
+# In sync_to_netbox, call create_tags_from_config after NetBox API session is created
+def sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credential):
+    logger.info(f"Syncing data to Netbox at {netbox_url}")
+    session = requests.Session()
+    session.verify = config.get('ssl', {}).get('verify', True)
+    session.timeout = config.get('timeouts', {}).get('netbox_api', 30)
+    nb = api(netbox_url, token=netbox_token)
+    nb.http_session = session
+
+    # --- Create tags from config before anything else ---
+    create_tags_from_config(nb, config)
+    # ---------------------------------------------------
+
+    setup_custom_fields(nb, config)
+    aggregate_map = setup_rirs_and_aggregates(nb, config)
+    role_map = setup_ipam_roles(nb, config)
+    tenant_map, aggregate_tag_filter = setup_tenancy(nb, config, all_network_data)
+
+    sync_tag_config = config.get('tags', {}).get('sync_tag', {})
+    azure_tag = get_or_create_tag(
+        nb,
+        tag_name=sync_tag_config.get('name', "azure-sync"),
+        tag_description=sync_tag_config.get('description', "Synced from Azure"),
+        color=sync_tag_config.get('color', '0078d4')
+    )
+    azure_tag_dict = [{'id': azure_tag.id}]
+
+    additional_tags = []
+    for tag_name in config.get('tags', {}).get('additional_tags', []):
+        # Try to get color from custom_tags if defined
+        color = None
+        for tag_def in config.get('tags', {}).get('custom_tags', []):
+            if tag_def.get('name') == tag_name:
+                color = tag_def.get('color', None)
+                break
+        tag = get_or_create_tag(nb, tag_name, color=color)
+        additional_tags.append({'id': tag.id})
+
+    # ... rest of sync_to_netbox logic unchanged ...
+
+    for subscription_data in all_network_data:
+        subscription_id = subscription_data['subscription_id']
+        subscription_name = subscription_data['subscription_name']
+        # ... rest of your logic ...
+
+# ... rest of your script remains unchanged ...
+
+def main():
+    config = load_config_yaml()
+    args = parse_arguments()
+    netbox_url = args.netbox_url or config.get('netbox', {}).get('url')
+    netbox_token = args.netbox_token or config.get('netbox', {}).get('token')
+    if not netbox_url or not netbox_token:
+        logger.error("Netbox URL and token must be provided either as arguments or in config.yaml")
+        sys.exit(1)
+    log_level = config.get('logging', {}).get('level', 'DEBUG')
+    log_format = config.get('logging', {}).get('format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logging.basicConfig(level=log_level, format=log_format)
+    filters = config.get('filters', {})
+    if filters.get('regions', {}).get('include'):
+        logger.warning("Region include filters set but not implemented yet")
+    try:
+        logger.info("Starting Azure to Netbox sync")
+        credential = get_azure_credentials(config, args)
+        process_all = config.get('azure', {}).get('subscriptions', {}).get('process_all', True)
+        specific_id = args.subscription_id or config.get('azure', {}).get('subscriptions', {}).get('specific_id')
+        mg_id = args.management_group_id or config.get('azure', {}).get('subscriptions', {}).get('management_group', {}).get('id')
+        mg_name = args.management_group_name or config.get('azure', {}).get('subscriptions', {}).get('management_group', {}).get('name')
+        if mg_id or mg_name:
+            subscriptions = get_management_group_subscriptions(credential, mg_id, mg_name)
+            if not subscriptions:
+                logger.error("No subscriptions found in the specified management group")
+                sys.exit(1)
+        elif specific_id:
+            logger.info(f"Processing only subscription {specific_id}")
+            sub_client = SubscriptionClient(credential)
+            try:
+                sub_details = sub_client.subscriptions.get(specific_id)
+                real_display_name = sub_details.display_name
+                logger.info(f"Retrieved real display name for subscription {specific_id}: {real_display_name}")
+            except Exception as e:
+                logger.warning(f"Could not retrieve display name for {specific_id}: {str(e)}. Using fallback.")
+                real_display_name = f"Subscription {specific_id}"
+            subscriptions = [type('obj', (object,), {
+                'subscription_id': specific_id,
+                'display_name': real_display_name
+            })]
+        elif process_all:
+            subscriptions = get_azure_subscriptions(credential)
+        else:
+            logger.error("No subscription processing method specified")
+            sys.exit(1)
+        all_network_data = []
+        for subscription in subscriptions:
+            subscription_id = subscription.subscription_id
+            subscription_name = subscription.display_name
+            # --- SKIP "DELETED" SUBSCRIPTIONS ---
+            if "DELETED" in subscription_name.upper():
+                logger.info(f"Skipping subscription '{subscription_name}' ({subscription_id}) because it is marked as DELETED.")
+                continue
+            # ------------------------------------
+            subscription_data = {
+                'subscription_id': subscription_id,
+                'subscription_name': subscription_name,
+                'vnets': []
+            }
+            vnets_data = get_vnets_and_subnets(subscription_id, credential)
+            subscription_data['vnets'] = vnets_data
+            all_network_data.append(subscription_data)
+        sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credential)
+        logger.info("Azure to Netbox sync completed successfully")
+    except Exception as e:
+        logger.error(f"Error during Azure to Netbox sync: {str(e)}", exc_info=True)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
 ```
 
-Call this function **after** you create your NetBox API object, e.g. in `sync_to_netbox` or `main`:
-
-```python
-nb = api(netbox_url, token=netbox_token)
-nb.http_session = session
-
-create_tags_from_config(nb, config)
-```
-
 ---
 
-### 4. **Use Tags in Your Script**
-
-When you want to use a tag, just call `get_or_create_tag(nb, "Production")` or similar, and it will use the color from NetBox.
-
----
-
-## **Summary**
-
-- Define tags (with color) in `config.yaml`.
-- Update your tag creation function to use the color.
-- Create all tags at startup.
-- Use tags as before.
-
----
-
-**Let me know if you want a full code block with these changes, or if you want to assign tags to prefixes/VRFs based on config!**
+**Now, all tags defined in your config (with color) will be created/updated in NetBox, and you can use them throughout your script!**  
+Let me know if you want to assign tags to specific objects based on logic/config, or if you need further customization.
