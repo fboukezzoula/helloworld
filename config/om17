@@ -207,14 +207,18 @@ def get_or_create_aggregate(nb, prefix, rir_id, description, tags):
         tags=tags
     )
 
-def get_or_create_tag(nb, tag_name, tag_description="", tag_color="aaaaaa"):
-    if isinstance(tag_name, dict):
-        logger.warning("Tag input is a dict; extracting 'name' for tag creation.")
-        tag_name = tag_name.get('name')
-        tag_description = tag_name.get('description', tag_description)
-        tag_color = tag_name.get('color', tag_color)
-    if not isinstance(tag_name, str):
-        raise ValueError(f"Invalid tag_name: {tag_name}. Must be a string or dict with 'name' key.")
+def get_or_create_tag(nb, tag_input, tag_description="", tag_color="aaaaaa"):
+    if isinstance(tag_input, dict):
+        logger.debug("Tag input is a dict; extracting properties.")
+        tag_name = tag_input.get('name')
+        if not tag_name:
+            raise ValueError("Tag dict missing 'name' key.")
+        tag_description = tag_input.get('description', tag_description)
+        tag_color = tag_input.get('color', tag_color)
+    elif isinstance(tag_input, str):
+        tag_name = tag_input
+    else:
+        raise ValueError(f"Invalid tag_input: {tag_input}. Must be a string or dict with 'name' key.")
 
     slug = tag_name.lower().replace(" ", "-")
     try:
@@ -456,15 +460,9 @@ def setup_rirs_and_aggregates(nb, config):
         agg_tags = []
         agg_tag_names = []  # Store lowercase tag names for filtering
         for tag_item in agg.get('tags', []):
-            if isinstance(tag_item, dict):
-                tag_name = tag_item.get('name')
-            else:
-                tag_name = tag_item
-            if not tag_name:
-                continue
-            tag = get_or_create_tag(nb, tag_name)
+            tag = get_or_create_tag(nb, tag_item)
             agg_tags.append({'id': tag.id})
-            agg_tag_names.append(tag_name.lower())
+            agg_tag_names.append(tag.name.lower())
         
         created_agg = get_or_create_aggregate(
             nb,
@@ -489,13 +487,7 @@ def setup_ipam_roles(nb, config):
     for role in roles_config:
         role_tags = []
         for tag_item in role.get('tags', []):
-            if isinstance(tag_item, dict):
-                tag_name = tag_item.get('name')
-            else:
-                tag_name = tag_item
-            if not tag_name:
-                continue
-            tag = get_or_create_tag(nb, tag_name)
+            tag = get_or_create_tag(nb, tag_item)
             role_tags.append({'id': tag.id})
         
         created_role = get_or_create_ipam_role(
@@ -536,12 +528,8 @@ def setup_tenancy(nb, config, all_network_data):
     tenant_tag_names = tenancy_config.get('tenant_tags', [])
     tenant_tags = []
     for t in tenant_tag_names:
-        if isinstance(t, dict):
-            tag_name = t.get('name')
-        else:
-            tag_name = t
-        if tag_name:
-            tenant_tags.append({'id': get_or_create_tag(nb, tag_name).id})
+        tag = get_or_create_tag(nb, t)
+        tenant_tags.append({'id': tag.id})
     
     tenant_map = {}
     for sub_data in all_network_data:
@@ -611,6 +599,9 @@ def setup_custom_tags(nb, config):
 
     logger.info("Setting up custom tags from config.yaml")
     for tag_config in custom_tags:
+        if not isinstance(tag_config, dict):
+            logger.warning(f"Skipping invalid custom tag config: {tag_config} (must be dict)")
+            continue
         name = tag_config.get('name')
         if not name:
             logger.warning("Skipping custom tag without name")
@@ -622,10 +613,10 @@ def setup_custom_tags(nb, config):
 
         # Validate color (basic hex check)
         if not re.match(r'^[0-9a-fA-F]{6}$', color):
-            logger.warning(f"Invalid color '{color}' for tag '{name}'; skipping color update")
+            logger.warning(f"Invalid color '{color}' for tag '{name}'; using default")
             color = "aaaaaa"
 
-        get_or_create_tag(nb, name, tag_description=description, tag_color=color)
+        get_or_create_tag(nb, {'name': name, 'description': description, 'color': color})
 
     logger.info("Custom tags setup completed")
 
@@ -649,20 +640,16 @@ def sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credentia
     sync_tag_config = config.get('tags', {}).get('sync_tag', {})
     azure_tag = get_or_create_tag(
         nb,
-        tag_name=sync_tag_config.get('name', "azure-sync"),
+        tag_input=sync_tag_config.get('name', "azure-sync"),
         tag_description=sync_tag_config.get('description', "Synced from Azure")
     )
     azure_tag_dict = [{'id': azure_tag.id}]
     
     additional_tags = []
-    for tag_item in config.get('tags', {}).get('additional_tags', []):
-        if isinstance(tag_item, dict):
-            tag_name = tag_item.get('name')
-        else:
-            tag_name = tag_item
-        if tag_name:
-            tag = get_or_create_tag(nb, tag_name)
-            additional_tags.append({'id': tag.id})
+    additional_tag_configs = config.get('tags', {}).get('additional_tags', [])
+    for tag_item in additional_tag_configs:
+        tag = get_or_create_tag(nb, tag_item)
+        additional_tags.append({'id': tag.id})
     
     for subscription_data in all_network_data:
         subscription_id = subscription_data['subscription_id']
