@@ -1,0 +1,110 @@
+Absolutely! You can **define tags (with colors) in your `config.yaml`** and have your script create them in NetBox with the specified color.  
+NetBox tags support a `color` field (hex code, e.g. `ff0000` for red, `00ff00` for green, etc).
+
+---
+
+## **How to Do It**
+
+### 1. **Define Tags in `config.yaml`**
+
+Add a section like this to your `config.yaml`:
+
+```yaml
+tags:
+  custom_tags:
+    - name: "Production"
+      description: "Production environment"
+      color: "ff0000"   # Red
+    - name: "Development"
+      description: "Development environment"
+      color: "00ff00"   # Green
+    - name: "Azure"
+      description: "Azure imported"
+      color: "0078d4"   # Azure blue
+    - name: "DELETED"
+      description: "Deleted subscription"
+      color: "808080"   # Grey
+```
+
+---
+
+### 2. **Update Your Script to Create Tags with Colors**
+
+Update your `get_or_create_tag` function to accept and use the `color` parameter:
+
+```python
+def get_or_create_tag(nb, tag_name, tag_description="", color=None):
+    slug = tag_name.lower().replace(" ", "-")
+    try:
+        tag = nb.extras.tags.get(slug=slug)
+        if tag:
+            # Update color/description if changed
+            needs_update = False
+            if color and tag.color != color:
+                tag.color = color
+                needs_update = True
+            if tag.description != tag_description:
+                tag.description = tag_description
+                needs_update = True
+            if needs_update:
+                tag.save()
+                logger.info(f"Updated tag: {tag_name} (color: {color})")
+            else:
+                logger.info(f"Found existing tag: {tag_name}")
+            return tag
+    except Exception as e:
+        logger.debug(f"Error getting tag {tag_name}: {str(e)}")
+    logger.info(f"Creating new tag: {tag_name} (color: {color})")
+    return nb.extras.tags.create(
+        name=tag_name,
+        slug=slug,
+        description=tag_description,
+        color=color or "ffffff"
+    )
+```
+
+---
+
+### 3. **Create Tags from Config at Startup**
+
+Add this to your `main()` (or before you start syncing), to ensure all tags are created:
+
+```python
+def create_tags_from_config(nb, config):
+    tags_config = config.get('tags', {}).get('custom_tags', [])
+    for tag_def in tags_config:
+        get_or_create_tag(
+            nb,
+            tag_name=tag_def.get('name'),
+            tag_description=tag_def.get('description', ''),
+            color=tag_def.get('color', 'ffffff')
+        )
+```
+
+Call this function **after** you create your NetBox API object, e.g. in `sync_to_netbox` or `main`:
+
+```python
+nb = api(netbox_url, token=netbox_token)
+nb.http_session = session
+
+create_tags_from_config(nb, config)
+```
+
+---
+
+### 4. **Use Tags in Your Script**
+
+When you want to use a tag, just call `get_or_create_tag(nb, "Production")` or similar, and it will use the color from NetBox.
+
+---
+
+## **Summary**
+
+- Define tags (with color) in `config.yaml`.
+- Update your tag creation function to use the color.
+- Create all tags at startup.
+- Use tags as before.
+
+---
+
+**Let me know if you want a full code block with these changes, or if you want to assign tags to prefixes/VRFs based on config!**
