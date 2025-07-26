@@ -1,0 +1,58 @@
+That link was just a placeholder/example and **does not exist**—I apologize for any confusion!  
+You should **copy and paste the code** from my previous message directly into your script.  
+There is no actual Gist at that URL.
+
+---
+
+### **What to do:**
+
+1. **Find this section** in your script (in `main()`):
+
+   ```python
+   for subscription in subscriptions:
+       subscription_id = subscription.subscription_id
+       subscription_data = {
+           'subscription_id': subscription_id,
+           'subscription_name': subscription.display_name,
+           'vnets': []
+       }
+       
+       vnets_data = get_vnets_and_subnets(subscription_id, credential)
+       subscription_data['vnets'] = vnets_data
+       all_network_data.append(subscription_data)
+   ```
+
+2. **Replace it with this:**
+
+   ```python
+   for subscription in subscriptions:
+       subscription_id = subscription.subscription_id
+       subscription_name = subscription.display_name
+
+       # --- SKIP "DELETED" SUBSCRIPTIONS ---
+       if "DELETED" in subscription_name.upper():
+           logger.info(f"Skipping subscription '{subscription_name}' ({subscription_id}) because it is marked as DELETED.")
+           continue
+       # ------------------------------------
+
+       subscription_data = {
+           'subscription_id': subscription_id,
+           'subscription_name': subscription_name,
+           'vnets': []
+       }
+       
+       vnets_data = get_vnets_and_subnets(subscription_id, credential)
+       subscription_data['vnets'] = vnets_data
+       all_network_data.append(subscription_data)
+   ```
+
+3. **Save and run your script.**
+
+---
+
+**Result:**  
+Any subscription with `"DELETED"` in its name will be skipped and not synced to NetBox.
+
+---
+
+If you want a full script file with this change, let me know and I can provide it as a downloadable file or paste the entire script here.
