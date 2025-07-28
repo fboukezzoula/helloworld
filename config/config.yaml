@@ -1,134 +1,125 @@
-Below is a complete template for your `config.yaml` file, based on the structure you provided in your query. This template includes **all sections** with example values, placeholders, and comments (I've kept the mix of French and English comments from your sample for familiarity, but added clarifications where needed). It matches the parsing logic in the script I provided earlier.
-
-You can copy-paste this directly into a `config.yaml` file in your script's directory. Customize the values as needed (e.g., replace placeholders like "https://your-netbox-instance.com" with real values). Commented-out sections (e.g., `# specific_id`) show optional configurations—uncomment and fill them in if you want to use them.
-
-### config.yaml Template
 ```yaml
-# Configuration Azure to Netbox Sync
-# Fichier de configuration pour la synchronisation Azure vers Netbox
+# Example config.yaml for Azure to NetBox Sync Script
+# This includes the organization section with per-region tag colors, 
+# as well as other common sections (e.g., tenancy, tags, etc.).
+# Adjust values as needed for your environment.
 
-# Configuration Netbox
-# (Required: URL and token for NetBox API access)
+# NetBox Configuration (optional; can be passed via CLI args)
 netbox:
-  url: "https://your-netbox-instance.com"  # e.g., http://localhost:8080 or your production URL
-  token: "your-netbox-api-token"  # Your NetBox API token
+  url: "https://your-netbox-instance/api"  # NetBox API URL
+  token: "your-netbox-api-token"  # NetBox API token
 
-# Configuration Azure
-# (Settings for Azure authentication and subscription processing)
+# Azure Configuration
 azure:
-  # Authentification
   authentication:
-    # Options: default (uses DefaultAzureCredential), interactive (browser login), or provide SPN details below
-    method: "default"
-    # For SPN (Service Principal) auth (optional; overrides method if all are provided)
-    # client_id: "your-azure-client-id"
-    # client_secret: "your-azure-client-secret"
-    # tenant_id: "your-azure-tenant-id"
-    
-  # Abonnements à traiter
-  # (Choose one option; CLI args can override these)
+    method: "default"  # Options: default, interactive, or service principal
+    client_id: "your-client-id"  # For service principal
+    client_secret: "your-client-secret"
+    tenant_id: "your-tenant-id"
   subscriptions:
-    # Option 1: Traiter tous les abonnements accessibles (set to true for all accessible subs)
-    process_all: true
-    
-    # Option 2: Traiter un abonnement spécifique (uncomment and set ID)
-    # specific_id: "12345678-1234-1234-1234-123456789012"
-    
-    # Option 3: Traiter tous les abonnements d'un groupe de gestion (uncomment and set ID or name)
-    # management_group:
-    #   id: "mg-production"  # Management Group ID
-    #   name: "Production Management Group"  # Management Group display name (used if ID is not provided)
+    process_all: true  # Set to false if using specific_id or management_group
+    specific_id: ""  # Optional: Process only this subscription ID
+    management_group:
+      id: ""  # Optional: Management Group ID
+      name: ""  # Optional: Management Group name
 
-# Configuration du mapping
-# (Mapping settings for devices/sites—currently unused in the script but parsed for future extensions)
-mapping:
-  # Préfixe pour les sites Azure
-  site_prefix: "Azure-"
-  
-  # Préfixe pour les types de périphériques
-  device_type_prefix: "Azure"
-  
-  # Préfixe pour les rôles de périphériques
-  device_role_prefix: "Azure"
-  
-  # Fabricant par défaut
-  manufacturer: "Microsoft Azure"
-  
-  # Interface par défaut
-  default_interface: "eth0"
-  
-  # Longueur max des noms
-  max_name_length: 64
+# Logging Configuration
+logging:
+  level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
-# Configuration des tags
-# (Tags applied to synced objects)
+# Tags Configuration
 tags:
-  # Tag principal pour les objets synchronisés
-  sync_tag:
+  default_color: "00ff00"  # Global fallback for tags (e.g., green)
+  sync_tag:  # Special "azure-sync" tag
     name: "azure-sync"
     description: "Synced from Azure"
-    
-  # Tags additionnels (list of tag names; currently unused but parsed)
-  additional_tags: []  # e.g., ["cloud", "production"]
+    color: "aa1409"  # Red
+  additional_tags: []  # Optional: List of additional tags to apply
 
-# Configuration des champs personnalisés
-# (Custom fields for prefixes in NetBox; set enabled: false to skip creation)
-custom_fields:
-  # Champ abonnement Azure
+# Tenancy Configuration (from your original example)
+tenancy:
+  default_group: "AZURE"
+  groups:  # Changed to 'groups' (list) for consistency; was 'group' in your snippet
+    - name: "AZURE"
+      slug: "azure"
+      description: "AZURE Cloud Tenants"
+  tenant_tags:
+    - name: "AZURE"
+      color: "00ff00"  # Green
+
+# Organization Configuration (updated for per-region colors)
+# Regions: Use a list of dicts under 'mapping' for per-region customization.
+# Each entry can specify 'color' (overrides default from region_tags.default_color).
+organization:
+  site_group:
+    name: "Azure Sites"
+    description: "Group for all Azure-related sites"
+  site_prefix: "Azure - "  # Prefix for site names (e.g., "Azure - MyVNet (France Central)")
+  regions:
+    mapping:  # List of dicts for regions (add as many as needed)
+      - azure_location: francecentral
+        tag_name: FRC
+        color: "00ff00"  # Green for FRC tag
+      - azure_location: westeurope
+        tag_name: EUW
+        color: "ff0000"  # Red for EUW tag
+      - azure_location: eastus
+        tag_name: EUS
+        color: "0000ff"  # Blue for EUS tag
+      - azure_location: westus
+        tag_name: WUS
+        color: "ffff00"  # Yellow for WUS tag
+      - azure_location: northeurope
+        tag_name: EUN
+        color: "800080"  # Purple for EUN tag
+      - azure_location: uksouth
+        tag_name: UKS
+        # No 'color' specified: Will use region_tags.default_color ("aaaaaa" gray)
+      # Add more regions as needed...
+    region_tags:  # Defaults for tags (applied if not overridden in mapping)
+      default_color: "aaaaaa"  # Gray fallback if no per-region color
+      default_description_prefix: "Azure Region: "  # Prefix for tag/region descriptions
+
+# Other Optional Sections (examples; add as needed)
+rirs:  # RIRs for aggregates
+  - name: "Private"
+    slug: "private"
+    description: "Private IP Space"
+    is_private: true
+
+aggregates:  # Aggregates to create
+  - prefix: "10.0.0.0/8"
+    rir: "Private"
+    description: "RFC1918 Private Space"
+    tags: []
+
+ipam_roles:  # IPAM Roles
+  - name: "VNet"
+    slug: "vnet"
+    description: "Azure Virtual Network"
+    tags: []
+
+custom_fields:  # Custom fields for prefixes
   azure_subscription:
     enabled: true
     field_type: "text"
-    description: "Azure subscription name"  # Updated as per your request (only name)
-    
-  # Champ URL abonnement Azure
+    description: "Azure subscription name"
   azure_subscription_url:
     enabled: true
     field_type: "url"
     description: "Direct link to Azure subscription portal"
 
-# Configuration du logging
-# (Logging level and format; applied at runtime)
-logging:
-  level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+peering:  # Peering check configuration
+  enabled: true
+  ok_value: "✅"
+  ko_value: "❌"
+  no_peerings_value: "No peerings"
 
-# Configuration des filtres
-# (Filters for Azure resources; currently logged but not fully implemented—extend the script if needed)
-filters:
-  # Filtrer par région Azure
-  regions:
-    include: []  # e.g., ["westeurope", "eastus"] (empty = all regions)
-    exclude: []  # e.g., ["northcentralus"] (regions to exclude)
-    
-  # Filtrer par groupe de ressources
-  resource_groups:
-    include: []  # e.g., ["rg-production"] (empty = all groups)
-    exclude: []  # e.g., ["rg-test"] (groups to exclude)
-    
-  # Filtrer par nom de ressource (using regex patterns)
-  resource_names:
-    include_patterns: []  # e.g., ["^aks-.*"] (patterns to include)
-    exclude_patterns: []  # e.g., ["^test-.*"] (patterns to exclude)
-
-# Configuration SSL
-# (SSL verification for NetBox API calls)
+# SSL and Timeouts (optional)
 ssl:
-  verify: true  # Set to false to disable SSL verification (not recommended for production)
+  verify: true  # Verify SSL certificates
 
-# Configuration des timeouts
-# (API timeouts in seconds)
 timeouts:
-  azure_api: 30  # Timeout for Azure API calls
-  netbox_api: 30  # Timeout for NetBox API calls
+  netbox_api: 30  # Timeout for NetBox API requests (seconds)
 ```
-
-### How to Use This Template
-1. **Save It**: Create a file named `config.yaml` in the same directory as your Python script, and paste the above content.
-2. **Customize**:
-   - Fill in real values (e.g., NetBox URL/token, Azure auth details).
-   - For subscriptions: Enable only one option (e.g., set `process_all: true` and comment out the others).
-   - For optional sections: Leave them as-is or comment them out if not needed—the script handles missing keys gracefully.
-3. **Run the Script**: Execute your Python script. It will load `config.yaml` automatically. Use CLI args to override (e.g., `python script.py --netbox-url https://new-url.com`).
-4. **Validation**: If the YAML is invalid (e.g., syntax error), the script will log an error and fall back to defaults/CLI args.
-
-This template covers everything in your sample while aligning with the script's parsing. If you need adjustments (e.g., more defaults or validation), or if testing reveals issues, let me know!
