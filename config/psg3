@@ -1,0 +1,485 @@
+Below is a complete, updated version of your script that incorporates the new "organization" features based on your requirements and the provided config.yaml snippet. I'll explain the changes and how it works first, then provide the full script.
+
+### Key Explanations and Changes
+#### Understanding Your Requirements
+- **One Tenant Per Subscription**: This remains unchanged and working as per your confirmation. All prefixes for a subscription are assigned to its single tenant.
+- **Organization Integration (Sites, Site Groups, Regions, Tags)**:
+  - **Site Group**: A single Site Group (e.g., "Azure Sites") is created/updated if it doesn't exist, based on your config (`organization.site_group`).
+  - **Regions**: 
+    - Uses the `organization.regions.mapping` from config.yaml (e.g., `francecentral: FRC`, `westeurope: EUW`).
+    - For each Azure VNet location (e.g., "francecentral"), the script maps it to a NetBox Region slug (e.g., "FRC").
+    - Creates/updates a NetBox Region with:
+      - Slug: The mapped value (e.g., "frc" – lowercase for slugs).
+      - Name: Derived from the Azure location key (e.g., "France Central" for "francecentral" – title-cased and spaced).
+      - Description: "Azure Region: [Name]" (customizable via config if needed).
+    - Regions are hierarchical in NetBox, but here they're created as top-level (no parent) for simplicity. You can extend if needed.
+  - **Sites**:
+    - For each unique VNet (based on name + location), creates/updates a Site in NetBox.
+    - Site Name: Uses `organization.site_prefix` (e.g., "Azure - ") + VNet name + " (" + location + ")" (e.g., "Azure - my-vnet (francecentral)").
+    - Assigned to: The Site Group ("Azure Sites") and the mapped Region (e.g., slug "frc").
+    - Status: 'active' by default.
+    - When creating/updating Prefixes, the script assigns the relevant Site to each Prefix (via the `site` field in NetBox IPAM Prefixes). This links everything together.
+  - **Tags for Regions**:
+    - As per your request ("FRC will be the tag and will be create if not exist (with color, description...)"), the script creates a Tag for each mapped value (e.g., Tag name "FRC", slug "frc").
+    - Color: Uses the global `tags.default_color` from config.yaml (e.g., "00ff00" for green). You can add per-tag colors in the mapping if needed (see config example below).
+    - Description: "Azure Region Tag: [Azure Location]" (e.g., "Azure Region Tag: francecentral").
+    - These Tags are assigned to: The corresponding Site and all Prefixes in that Site/Region.
+    - If the Tag already exists, it's updated (color/description).
+- **How It Integrates with Existing Logic**:
+  - In `setup_organization(nb, config)`, the script creates/updates Site Groups, Regions, and Region Tags.
+  - In `sync_to_netbox`, when processing each VNet:
+    - Maps the VNet's `location` (e.g., "francecentral") to a Region slug (e.g., "FRC") using the config mapping.
+    - Creates/gets the Region and its Tag.
+    - Creates/gets a Site for the VNet and assigns the Region and Tag to it.
+    - When creating/updating each Prefix (address space), assigns the Site (and thus indirectly the Region) and the Region Tag.
+  - If a mapping is missing for a VNet location (e.g., unknown Azure region), it skips Region/Site/Tag assignment for that VNet and logs a warning.
+  - Prefixes now have `site` assigned, so in NetBox UI (IPAM > Prefixes > [Prefix]), you'll see the Site/Region linked. In Organization > Sites > [Site], you'll see associated Prefixes.
+- **Assumptions and Extensibility**:
+  - Region names are auto-derived (e.g., "francecentral" -> "France Central"). Add a `name` field in the mapping if you want custom names.
+  - No hierarchical Regions (e.g., no parent/child). Add to config/script if needed.
+  - Tags are created for Regions, but you can assign them elsewhere (e.g., to Tenants) by extending the code.
+  - Colors/Descriptions for Tags: Uses defaults; extend the mapping for per-region customization (see updated config.yaml example below).
+  - NetBox Models: This uses NetBox's Organization app (Sites, Regions, Site Groups) and Extras (Tags).
+
+#### Updated config.yaml Example
+Add this to your existing config.yaml. I've expanded it based on your snippet to include optional per-region colors/descriptions (defaults to global `tags.default_color` if not specified).
+
+```yaml
+tags:
+  default_color: "00ff00"  # Global fallback for tags (e.g., green)
+
+# Your existing tenancy (unchanged)
+tenancy:
+  default_group: "AZURE"
+  groups:  # Note: Fixed your snippet to 'groups' (plural) for consistency
+    - name: "AZURE"
+      slug: "azure"
+      description: "AZURE Cloud Tenants"
+  tenant_tags:
+    - name: "AZURE"
+      color: "00ff00"
+
+# New: Organization configuration
+organization:
+  site_group:
+    name: "Azure Sites"
+    description: "Group for all Azure-related sites"
+  site_prefix: "Azure - "  # Prefix for site names
+  regions:
+    mapping:
+      francecentral:
+        slug: "FRC"  # Required: Slug for Region and Tag
+        name: "France Central"  # Optional: Custom Region name (default: auto-derived from key)
+        tag_color: "00ff00"  # Optional: Custom color for the Tag (default: tags.default_color)
+        tag_description: "Azure Region: France Central"  # Optional: Custom Tag desc
+      westeurope:
+        slug: "EUW"
+        name: "West Europe"
+        tag_color: "0000ff"  # Blue example
+        tag_description: "Azure Region: West Europe"
+      eastus:
+        slug: "EUS"
+        name: "East US"
+      westus:
+        slug: "WUS"
+        name: "West US"
+      # Add more Azure locations as needed (e.g., northeurope: "EUN", etc.)
+      # If not mapped, the script will skip Region/Site/Tag for that VNet location
+```
+
+- If you don't specify `name`, `tag_color`, or `tag_description` for a mapping entry, it uses defaults (auto-derived name, global color, generic description).
+
+### Full Updated Script
+I've added new functions (`setup_organization`, `get_or_create_region`, `get_or_create_site`, `derive_region_name`) and integrated them into `sync_to_netbox`. The rest is unchanged.
+
+```python
+#!/usr/bin/env python3
+
+import os
+import sys
+import logging
+import argparse
+from pathlib import Path
+import yaml
+import re
+import ipaddress
+from azure.identity import DefaultAzureCredential, InteractiveBrowserCredential, ClientSecretCredential
+from azure.mgmt.subscription import SubscriptionClient
+from azure.mgmt.network import NetworkManagementClient
+from azure.mgmt.managementgroups import ManagementGroupsAPI
+from pynetbox import api
+from pynetbox.core.query import RequestError
+import requests
+
+# Default logging config (can be overridden by YAML or CLI)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+def load_config_yaml(config_path='config.yaml'):
+    """Load configuration from YAML file if it exists"""
+    config = {}
+    config_file = Path(config_path)
+    if config_file.exists():
+        try:
+            with open(config_file, 'r') as f:
+                config = yaml.safe_load(f)
+            logger.info(f"Loaded configuration from {config_path}")
+        except yaml.YAMLError as e:
+            logger.error(f"Error parsing {config_path}: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error loading {config_path}: {str(e)}")
+    else:
+        logger.info(f"No {config_path} found; using defaults and CLI args")
+    return config
+
+def get_azure_credentials(config, args):
+    """Get Azure credentials based on config and args"""
+    auth_method = args.auth_method or config.get('azure', {}).get('authentication', {}).get('method', 'default')
+    
+    client_id = args.azure_client_id or config.get('azure', {}).get('authentication', {}).get('client_id')
+    client_secret = args.azure_client_secret or config.get('azure', {}).get('authentication', {}).get('client_secret')
+    tenant_id = args.azure_tenant_id or config.get('azure', {}).get('authentication', {}).get('tenant_id')
+    
+    if client_id and client_secret and tenant_id:
+        logger.info("Using Azure Service Principal authentication")
+        return ClientSecretCredential(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret
+        )
+    elif auth_method == 'interactive':
+        logger.info("Using interactive browser authentication for Azure")
+        return InteractiveBrowserCredential()
+    else:
+        logger.info("Using default Azure credential chain")
+        return DefaultAzureCredential()
+
+def get_management_group_subscriptions(credential, management_group_id=None, management_group_name=None):
+    logger.info("Getting subscriptions from management group")
+    
+    try:
+        mg_client = ManagementGroupsAPI(credential)
+        
+        if management_group_name and not management_group_id:
+            logger.info(f"Looking for management group with name: {management_group_name}")
+            management_groups = mg_client.management_groups.list()
+            for mg in management_groups:
+                if mg.display_name == management_group_name:
+                    management_group_id = mg.name
+                    logger.info(f"Found management group ID: {management_group_id}")
+                    break
+            
+            if not management_group_id:
+                logger.error(f"Management group with name '{management_group_name}' not found")
+                return []
+        
+        mg_details = mg_client.management_groups.get(
+            group_id=management_group_id,
+            expand="children",
+            recurse=True
+        )
+        
+        subscriptions = []
+        
+        def extract_subscriptions(mg_node):
+            if hasattr(mg_node, 'children') and mg_node.children:
+                for child in mg_node.children:
+                    if child.type == "/subscriptions":
+                        subscription_info = type('obj', (object,), {
+                            'subscription_id': child.name,
+                            'display_name': child.display_name
+                        })
+                        subscriptions.append(subscription_info)
+                        logger.info(f"Found subscription: {child.display_name} ({child.name})")
+                    elif child.type == "/providers/Microsoft.Management/managementGroups":
+                        extract_subscriptions(child)
+        
+        extract_subscriptions(mg_details)
+        
+        logger.info(f"Found {len(subscriptions)} subscriptions in management group")
+        return subscriptions
+        
+    except Exception as e:
+        logger.error(f"Error getting subscriptions from management group: {str(e)}")
+        return []
+
+def get_azure_subscriptions(credential):
+    logger.info("Getting Azure subscriptions")
+    subscription_client = SubscriptionClient(credential)
+    subscriptions = list(subscription_client.subscriptions.list())
+    logger.info(f"Found {len(subscriptions)} subscriptions")
+    return subscriptions
+
+def get_vnets_and_subnets(subscription_id, credential):
+    logger.info(f"Getting VNets for subscription {subscription_id}")
+    network_client = NetworkManagementClient(credential, subscription_id)
+    
+    vnets = list(network_client.virtual_networks.list_all())
+    logger.info(f"Found {len(vnets)} VNets in subscription {subscription_id}")
+    
+    vnet_data = []
+    for vnet in vnets:
+        address_spaces = [prefix for prefix in vnet.address_space.address_prefixes if prefix]  # Skip empty
+        logger.debug(f"VNet {vnet.name} has {len(address_spaces)} address spaces: {address_spaces}")
+        vnet_info = {
+            'name': vnet.name,
+            'id': vnet.id,
+            'resource_group': vnet.id.split('/')[4],
+            'location': vnet.location,
+            'address_space': address_spaces
+        }
+        vnet_data.append(vnet_info)
+    
+    return vnet_data
+
+def get_vnet_peerings(network_client, resource_group, vnet_name, config):
+    """Fetch peerings for a VNet and format the 'Peering check' string"""
+    peering_config = config.get('peering', {})
+    if not peering_config.get('enabled', True):
+        return "Peering check disabled"
+    
+    ok_value = peering_config.get('ok_value', '✅')  # Updated default to emoji
+    ko_value = peering_config.get('ko_value', '❌')  # Updated default to emoji
+    no_peerings = peering_config.get('no_peerings_value', 'No peerings')
+    
+    try:
+        peerings = list(network_client.virtual_network_peerings.list(resource_group, vnet_name))
+        if not peerings:
+            return no_peerings
+        
+        peering_strs = []
+        for peering in peerings:
+            sync_status = peering.peering_sync_level if hasattr(peering, 'peering_sync_level') else 'Unknown'
+            state = peering.peering_state if hasattr(peering, 'peering_state') else 'Unknown'
+            
+            logger.debug(f"Raw sync_status for {peering.name}: {sync_status}, state: {state}")  # Log raw values
+            
+            sync_ok = ok_value if sync_status == 'FullyInSync' else ko_value
+            state_ok = ok_value if state == 'Connected' else ko_value
+            
+            peering_strs.append(f"name: {peering.name} - {sync_status} {sync_ok} - Peering state {state} {state_ok}")
+        
+        return "; ".join(peering_strs)
+    except Exception as e:
+        logger.warning(f"Error fetching peerings for VNet {vnet_name}: {str(e)}")
+        return "Error fetching peerings"
+
+def get_or_create_rir(nb, name, slug, description, is_private=False, tags=None):
+    try:
+        rir = nb.ipam.rirs.get(slug=slug)
+        if rir:
+            logger.info(f"Found existing RIR: {name}")
+            return rir
+    except Exception as e:
+        logger.debug(f"Error getting RIR {name}: {str(e)}")
+    
+    logger.info(f"Creating new RIR: {name}")
+    tag_dicts = tags or []
+    return nb.ipam.rirs.create(
+        name=name,
+        slug=slug,
+        description=description,
+        is_private=is_private,
+        tags=tag_dicts
+    )
+
+def get_or_create_aggregate(nb, prefix, rir_id, description, tags):
+    try:
+        aggregate = nb.ipam.aggregates.get(prefix=prefix)
+        if aggregate:
+            logger.info(f"Found existing aggregate: {prefix}")
+            return aggregate
+    except Exception as e:
+        logger.debug(f"Error getting aggregate {prefix}: {str(e)}")
+    
+    logger.info(f"Creating new aggregate: {prefix}")
+    return nb.ipam.aggregates.create(
+        prefix=prefix,
+        rir=rir_id,
+        description=description,
+        tags=tags
+    )
+
+def clean_color(color_str, default="aaaaaa"):
+    """Clean and validate a color string (strip #, ensure 6 hex digits)"""
+    if not isinstance(color_str, str):
+        logger.warning(f"Invalid color type: {type(color_str)}; using default {default}")
+        return default
+    color_str = color_str.strip().lstrip('#').lower()
+    if re.match(r'^[0-9a-f]{6}$', color_str):
+        return color_str
+    logger.warning(f"Invalid color format '{color_str}'; using default {default}")
+    return default
+
+def get_or_create_tag(nb, tag_input, tag_description="", tag_color="aaaaaa"):
+    if isinstance(tag_input, dict):
+        logger.debug("Tag input is a dict; extracting properties.")
+        tag_name = tag_input.get('name')
+        if not tag_name:
+            logger.error("Tag dict missing 'name' key; skipping this tag.")
+            return None  # Skip instead of raising to prevent crash
+        tag_description = tag_input.get('description', tag_description)
+        tag_color = clean_color(tag_input.get('color', tag_color))
+    elif isinstance(tag_input, str):
+        tag_name = tag_input
+        tag_color = clean_color(tag_color)  # Use passed or default
+    else:
+        logger.error(f"Invalid tag_input type: {type(tag_input)}. Must be str or dict; skipping.")
+        return None
+
+    slug = tag_name.lower().replace(" ", "-")
+    try:
+        tag = nb.extras.tags.get(slug=slug)
+        if tag:
+            needs_update = False
+            if tag.description != tag_description:
+                tag.description = tag_description
+                needs_update = True
+            if tag.color != tag_color:
+                tag.color = tag_color
+                needs_update = True
+            if needs_update:
+                tag.save()
+                logger.info(f"Updated existing tag: {tag_name} (color: {tag_color})")
+            else:
+                logger.info(f"Found existing tag: {tag_name} (color: {tag.color})")
+            return tag
+    except Exception as e:
+        logger.debug(f"Error getting tag {tag_name}: {str(e)}")
+    
+    logger.info(f"Creating new tag: {tag_name} (color: {tag_color})")
+    try:
+        return nb.extras.tags.create(
+            name=tag_name,
+            slug=slug,
+            description=tag_description,
+            color=tag_color
+        )
+    except Exception as e:
+        logger.error(f"Failed to create tag {tag_name}: {str(e)}")
+        return None
+
+def get_or_create_ipam_role(nb, name, slug, description, tags):
+    try:
+        role = nb.ipam.roles.get(slug=slug)
+        if role:
+            logger.info(f"Found existing IPAM role: {name}")
+            return role
+    except Exception as e:
+        logger.debug(f"Error getting IPAM role {name}: {str(e)}")
+    
+    logger.info(f"Creating new IPAM role: {name}")
+    # Assume tags is already a list of dicts like [{'id': id}]
+    tag_dicts = [t for t in tags if isinstance(t, dict) and 'id' in t]  # Filter valid dicts
+    return nb.ipam.roles.create(
+        name=name,
+        slug=slug,
+        description=description,
+        tags=tag_dicts
+    )
+
+def get_or_create_tenant_group(nb, name, slug, description=""):
+    try:
+        group = nb.tenancy.tenant_groups.get(slug=slug)
+        if group:
+            logger.info(f"Found existing Tenant Group: {name}")
+            return group
+    except Exception as e:
+        logger.debug(f"Error getting Tenant Group {name}: {str(e)}")
+    
+    logger.info(f"Creating new Tenant Group: {name}")
+    return nb.tenancy.tenant_groups.create(
+        name=name,
+        slug=slug,
+        description=description
+    )
+
+def get_or_create_tenant(nb, name, group_id, description="", tags=None):
+    slug = name.lower().replace(' ', '-')  # Generate slug from name (UUID is already suitable)
+    try:
+        tenant = nb.tenancy.tenants.get(slug=slug)
+        if tenant:
+            needs_update = False
+            if tenant.group.id != group_id:
+                tenant.group = group_id
+                needs_update = True
+            if tenant.description != description:
+                tenant.description = description
+                needs_update = True
+            if tags and set(tag.id for tag in tenant.tags) != set(tag['id'] for tag in tags):
+                tenant.tags = tags
+                needs_update = True
+            if needs_update:
+                tenant.save()
+                logger.info(f"Updated Tenant: {name}")
+            else:
+                logger.info(f"Found existing Tenant: {name}")
+            return tenant
+    except RequestError as e:
+        logger.debug(f"Request error getting Tenant {name}: {str(e)}")
+    except Exception as e:
+        logger.debug(f"Error getting Tenant {name}: {str(e)}")
+    
+    logger.info(f"Creating new Tenant: {name} with slug {slug}")
+    try:
+        return nb.tenancy.tenants.create(
+            name=name,
+            slug=slug,  # Required field
+            group=group_id,
+            description=description,
+            tags=tags or []
+        )
+    except RequestError as e:
+        logger.error(f"Failed to create Tenant {name}: {str(e)}")
+        raise
+
+def get_or_create_custom_field(nb, field_name, field_type, field_description, object_types, field_choices=None):
+    try:
+        custom_field = nb.extras.custom_fields.get(name=field_name)
+        if custom_field:
+            logger.info(f"Found existing custom field: {field_name}")
+            return custom_field
+    except Exception as e:
+        logger.debug(f"Error getting custom field {field_name}: {str(e)}")
+
+    logger.info(f"Creating new custom field: {field_name}")
+    field_data = {
+        'name': field_name,
+        'label': field_name.replace('_', ' ').title(),
+        'type': field_type,
+        'description': field_description,
+        'object_types': object_types,
+        'required': False,
+        'default': None
+    }
+    if field_choices:
+        field_data['choices'] = field_choices
+
+    return nb.extras.custom_fields.create(**field_data)
+
+def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, subscription_id=None, aggregate_id=None, role_id=None, tenant_id=None, site_id=None, tags=None):
+    try:
+        existing_prefixes = nb.ipam.prefixes.filter(prefix=prefix_value)
+        
+        if existing_prefixes:
+            logger.info(f"Found existing prefix: {prefix_value}")
+            prefix = list(existing_prefixes)[0]
+            
+            needs_update = False
+            for key, value in defaults.items():
+                if key == 'parent':  
+                    continue
+                current_value = getattr(prefix, key, None)
+                if current_value != value:
+                    setattr(prefix, key, value)
+                    needs_update = True
+            
+            if subscription_name and subscription_id:
+                custom_fields = getattr(prefix, 'custom_fields', {}) or {}
+                azure_subscription_value = subscription_name
+                
+                existing_value = custom_fields.get('azure_subscription', '')
+                if existing_value != azure_subscription
