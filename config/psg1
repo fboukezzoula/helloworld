@@ -1,3 +1,4 @@
+```python
 #!/usr/bin/env python3
 
 import os
@@ -280,15 +281,15 @@ def get_or_create_tenant_group(nb, name, slug, description=""):
         description=description
     )
 
-def get_or_create_tenant(nb, name, group_id, description="", slug=None, tags=None):
+def get_or_create_tenant(nb, name, group=None, description="", slug=None, tags=None):
     if not slug:
         slug = name.lower().replace(' ', '-')
     try:
         tenant = nb.tenancy.tenants.get(slug=slug)
         if tenant:
             needs_update = False
-            if tenant.group and tenant.group.id != group_id:
-                tenant.group = group_id
+            if tenant.group != group:
+                tenant.group = group
                 needs_update = True
             if tenant.description != description:
                 tenant.description = description
@@ -312,7 +313,7 @@ def get_or_create_tenant(nb, name, group_id, description="", slug=None, tags=Non
         return nb.tenancy.tenants.create(
             name=name,
             slug=slug,
-            group=group_id,
+            group=group,
             description=description,
             tags=tags or []
         )
@@ -633,7 +634,7 @@ def sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credentia
     sync_tag_config = config.get('tags', {}).get('sync_tag', {})
     azure_tag = get_or_create_tag(
         nb,
-        tag_name=sync_tag_config.get('name', "azure-sync"),
+        tag_input=sync_tag_config.get('name', "azure-sync"),
         tag_description=sync_tag_config.get('description', "Synced from Azure")
     )
     azure_tag_dict = [{'id': azure_tag.id}]
@@ -876,3 +877,4 @@ def get_or_create_site(nb, name, group=None, tenant=None, region=None, descripti
 
 if __name__ == "__main__":
     main()
+```
