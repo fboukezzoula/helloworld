@@ -1,0 +1,32 @@
+#!/bin/bash
+
+# Variables Netbox
+API_TOKEN="ton_token_ici"
+NETBOX_URL="https://ton.netbox/api"
+
+# Tableau de tags à chercher
+TAGS=("EUN" "EUW" "FRC")
+
+# Boucle sur chaque tag
+for TAG in "${TAGS[@]}"; do
+    echo "🔍 Recherche du tag: $TAG"
+
+    # Requête pour obtenir l'ID du tag
+    TAG_ID=$(curl -s -H "Authorization: Token $API_TOKEN" \
+        "$NETBOX_URL/extras/tags/?name=$TAG" | jq -r '.results[0].id')
+
+    # Vérification que l'ID est bien récupéré
+    if [[ -z "$TAG_ID" || "$TAG_ID" == "null" ]]; then
+        echo "❌ Échec pour trouver l'ID du tag: $TAG"
+        exit 1
+    fi
+
+    # Définir dynamiquement la variable : ex. EUN_id=7
+    declare "${TAG}_id=$TAG_ID"
+    echo "✅ $TAG_id = ${!TAG_id}"
+done
+
+# Exemple d'utilisation : accéder à EUN_id
+echo "👉 ID de EUN: $EUN_id"
+echo "👉 ID de EUW: $EUW_id"
+echo "👉 ID de FRC: $FRC_id"
