@@ -340,4 +340,166 @@ Exportez la variable d’environnement TF_VAR_netbox_token.
 Terraform l’utilisera automatiquement, sans que le token soit codé en clair dans vos fichiers.
 Vous avez maintenant un template sécurisé et prêt à l’emploi !
 
+
+
+
+***********************************************************************
+
+
+🚀 Réserver plusieurs CIDR (un /24 par défaut) issus d’agregats différents
+1️⃣ Pourquoi on ne peut pas faire ça dans le même bloc resource ?
+netbox_prefix (ou tout provider) ne permet qu’une seule requête : « cherche le prefix disponible » .
+Si vous avez deux aggregates (ex : 10.0.0.0/8 et 203.0.113.0/24) vous devez lancer deux requêtes distinctes : une pour chaque aggregate.
+
+2️⃣ Deux approches
+Approche	Avantages	Inconvénients
+Deux appels du même module (un module par aggregate)	Lisible, chaque bloc est indépendant	Du code répété si vous avez beaucoup d’aggregates
+Un seul module appelé for_each	Un seul bloc de code, facilement extensible	Un peu plus de logique dans le module
+Nous allons présenter la seconde approche, qui est la plus « évolutive ».
+📦 Arborescence modifiée
+/terraform-netbox
+├── main.tf
+├── variables.tf
+├── outputs.tf
+└── modules
+    └── prefix_alloc
+        ├── main.tf
+        ├── variables.tf
+        └── outputs.tf
+Note : Le module prefix_alloc reste inchangé (il réserve un seul /24 à la fois).
+Ce qui change, c’est la façon dont on l’appelle dans main.tf.
+
+🔧 main.tf (racine)
+terraform {
+  required_version = ">= 1.3"
+  required_providers {
+    netbox = {
+      source  = "cloudnativeapp/terraform-provider-netbox"
+      version = ">= 0.19.0"
+    }
+  }
+}
+
+provider "netbox" {
+  url             = var.netbox_url
+  token           = var.netbox_token
+  skip_tls_verify = true
+}
+
+# ── 1️⃣  Définition de la liste des réservations
+# chaque entrée est un *map* contenant le nom de l’agg + les options
+locals {
+  reservations = [
+    # 1️⃣ Réservation dans un aggregate RFC‑1918
+    {
+      name          = "private_rfc1918"
+      aggregate_id  = 10   # ID de 10.0.0.0/8 dans NetBox
+      prefix_length = 24
+      tag_ids       = []        # pas de tags à filtrer
+    },
+    # 2️⃣ Réservation dans un aggregate BGP public
+    {
+      name          = "bgp_public"
+      aggregate_id  = 20   # ID de 203.0.113.0/24 dans NetBox
+      prefix_length = 24
+      tag_ids       = ["bgp"]
+    }
+  ]
+}
+
+# ── 2️⃣  Instanciation du module *pour chaque reservation*
+module "prefix_alloc" {
+  for_each = { for r in local.reservations : r.name => r }
+
+  source       = "./modules/prefix_alloc"
+  aggregate_id = each.value.aggregate_id
+  prefix_length= each.value.prefix_length
+  tag_ids      = each.value.tag_ids
+  description  = "Allocated by Terraform (${each.key})"
+  role         = null
+  status       = "active"
+}
+
+# ── 3️⃣  Exports (facultatif)
+output "allocated_prefixes" {
+  description = "Map de nom => CIDR alloué"
+  value = { for k, m in module.prefix_alloc : k => m.allocated_prefix }
+}
+
+output "allocated_prefix_ids" {
+  description = "Map de nom => ID NetBox du prefix alloué"
+  value = { for k, m in module.prefix_alloc : k => m.allocated_prefix_id }
+}
+Explications
+locals.reservations
+Une liste de maps, chaque map représente une réservation :
+
+name – nom clé (sera utilisé comme clé for_each)
+aggregate_id – ID du parent (aggregate ou prefix container)
+prefix_length – longueur voulue (24 par défaut)
+tag_ids – tags à filtrer (facultatif)
+for_each
+Crée une instance du module par entrée.
+each.key = name ; each.value = la map complète.
+
+Outputs
+On exporte un map de nom → CIDR, ce qui est très utile dans d’autres modules ou scripts.
+
+🛠️ Le module prefix_alloc (inchangé)
+# modules/prefix_alloc/main.tf
+data "netbox_prefix" "available_prefix" {
+  available = true
+  container = var.aggregate_id
+  length    = var.prefix_length
+  tags      = var.tag_ids
+}
+
+resource "netbox_prefix" "allocated" {
+  prefix      = data.netbox_prefix.available_prefix.prefix
+  description = var.description
+  role        = var.role
+  status      = var.status
+  tags        = var.tag_ids
+}
+# modules/prefix_alloc/variables.tf
+variable "aggregate_id"   { type = number }
+variable "prefix_length"  { type = number }
+variable "tag_ids"        { type = list(string); default = [] }
+variable "description"    { type = string }
+variable "role"           { type = string; default = null }
+variable "status"         { type = string; default = null }
+# modules/prefix_alloc/outputs.tf
+output "allocated_prefix"     { value = netbox_prefix.allocated.prefix }
+output "allocated_prefix_id"  { value = netbox_prefix.allocated.id }
+🎯 Cas d’utilisation : une seule ou plusieurs réservations
+Une seule reservation :
+Simplifiez locals.reservations à une entrée unique (ou utilisez count/for_each avec une liste de taille 1).
+L’appel du module est identique, mais il n’y aura qu’une seule instance.
+
+Plusieurs réservations :
+Ajoutez simplement plus de maps dans locals.reservations.
+Le code reste le même ; Terraform crée automatiquement autant d’instances que besoin.
+
+⚙️ Commandes
+# 1️⃣ Initialiser le répertoire (une fois)
+terraform init
+
+# 2️⃣ Voir le plan (vous verrez 2 ressources `netbox_prefix.allocated`)
+terraform plan
+
+# 3️⃣ Appliquer
+terraform apply
+📚 En résumé
+Chaque prefix doit être réservé depuis son propre aggregate.
+Utilisez une instance du module par aggregate (for_each ou count).
+Passez la liste de réservations dans un local ou un variable (list(object({...}))).
+Le module reste simple, seul responsable de réserver un /24.
+Les outputs en map vous permettent de référencer les prefixes alloués dans d’autres ressources ou scripts.
+Vous avez maintenant un template Terraform prêt à gérer toutes les combinaisons d’aggregats et de CIDR. Happy provisioning !
+
 Downloading model
+0 B / 0 B (0%)
+
+
+Downloading model
+
