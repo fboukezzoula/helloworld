@@ -1,0 +1,343 @@
+/terraform-netbox
+├── main.tf
+├── variables.tf
+├── outputs.tf
+└── modules
+    └── prefix_alloc
+        ├── main.tf
+        ├── variables.tf
+        └── outputs.tf
+
+
+2️⃣ Fichier racine : main.tf
+terraform {
+  required_version = ">= 1.3"
+  required_providers {
+    netbox = {
+      source  = "cloudnativeapp/terraform-provider-netbox"
+      version = ">= 0.19.0"   # version qui supporte NetBox 4.3.x
+    }
+  }
+}
+
+provider "netbox" {
+  # URL de votre instance NetBox (ici locale)
+  url = var.netbox_url
+
+  # Token d’API fourni par NetBox
+  token = var.netbox_token
+
+  # On ignore les erreurs SSL (localhost sans certificat CA)
+  skip_tls_verify = true
+}
+
+# Appel du module d’allocation de prefix
+module "prefix_alloc" {
+  source = "./modules/prefix_alloc"
+
+  # Id de l’aggregate (ou du prefix parent) dans lequel on veut réserver
+  aggregate_id = var.aggregate_id
+
+  # Taille du prefix à allouer
+  prefix_length = var.prefix_length
+
+  # Tags (nom ou id) que l’on veut filtrer et appliquer
+  tag_ids = var.tag_ids
+
+  # Descriptif et autres options de la nouvelle allocation
+  description = var.description
+  role        = var.role
+  status      = var.status
+}
+
+# Optionnel : exporter les valeurs retournées par le module
+output "allocated_prefix" {
+  value = module.prefix_alloc.allocated_prefix
+}
+
+output "allocated_prefix_id" {
+  value = module.prefix_alloc.allocated_prefix_id
+}
+
+3️⃣ Variables racine : variables.tf
+variable "netbox_url" {
+  description = "URL de l’instance NetBox (ex : http://localhost:2025)"
+  type        = string
+  default     = "http://localhost:2025"
+}
+
+variable "netbox_token" {
+  description = "Token API NetBox"
+  type        = string
+  sensitive   = true
+  default     = "3bac96ea-940b-444a-9757-a9a000282db3"   # à remplacer par votre token
+}
+
+variable "aggregate_id" {
+  description = "ID de l’aggregate (ou du prefix parent) où réserver"
+  type        = number
+}
+
+variable "prefix_length" {
+  description = "Longueur du prefix à allouer (ex : 24 pour /24)"
+  type        = number
+  default     = 24
+}
+
+variable "tag_ids" {
+  description = "Liste des tags (nom ou id) qui doivent être présents sur le prefix parent et appliqués au nouveau prefix"
+  type        = list(string)
+  default     = []
+}
+
+# Valeurs supplémentaires du prefix alloué
+variable "description" {
+  description = "Description du prefix alloué"
+  type        = string
+  default     = "Prefix alloué automatiquement par Terraform"
+}
+
+variable "role" {
+  description = "Rôle du prefix (facultatif)"
+  type        = string
+  default     = null
+}
+
+variable "status" {
+  description = "Statut du prefix (facultatif, ex : active)"
+  type        = string
+  default     = null
+}
+Note
+Vous pouvez passer les tags par nom (ex : "commercial") ou par id (ex : "12").
+Si vous ne voulez pas filtrer sur des tags, laissez tag_ids = [].
+
+4️⃣ Module d’allocation : modules/prefix_alloc/main.tf
+# 4️⃣ 1️⃣ Rechercher le prefix disponible
+data "netbox_prefix" "available_prefix" {
+  # on veut un prefix non encore utilisé
+  available = true
+
+  # on se place dans l’aggregate / prefix parent
+  container = var.aggregate_id
+
+  # on veut une longueur exacte (ex : /24)
+  length = var.prefix_length
+
+  # filtre sur les tags qui doivent être présents sur le prefix parent
+  tags = var.tag_ids
+}
+
+# 4️⃣ 2️⃣ Créer le prefix
+resource "netbox_prefix" "allocated" {
+  prefix = data.netbox_prefix.available_prefix.prefix
+
+  description = var.description
+  role        = var.role
+  status      = var.status
+
+  # on applique les mêmes tags au prefix alloué
+  tags = var.tag_ids
+}
+5️⃣ Variables du module : modules/prefix_alloc/variables.tf
+variable "aggregate_id" {
+  description = "ID de l’aggregate / prefix parent"
+  type        = number
+}
+
+variable "prefix_length" {
+  description = "Longueur du prefix à allouer"
+  type        = number
+}
+
+variable "tag_ids" {
+  description = "Liste de tags (nom ou id) à filtrer et à appliquer"
+  type        = list(string)
+  default     = []
+}
+
+variable "description" {
+  description = "Description du prefix alloué"
+  type        = string
+  default     = "Prefix alloué automatiquement par Terraform"
+}
+
+variable "role" {
+  description = "Rôle du prefix (facultatif)"
+  type        = string
+  default     = null
+}
+
+variable "status" {
+  description = "Statut du prefix (facultatif, ex : active)"
+  type        = string
+  default     = null
+}
+6️⃣ Sorties du module : modules/prefix_alloc/outputs.tf
+output "allocated_prefix" {
+  description = "Le prefix alloué (ex : 192.168.10.0/24)"
+  value       = netbox_prefix.allocated.prefix
+}
+
+output "allocated_prefix_id" {
+  description = "ID NetBox du prefix alloué"
+  value       = netbox_prefix.allocated.id
+}
+7️⃣ Comment exécuter
+
+# 1️⃣ Initialiser le répertoire Terraform (télécharge les providers)
+terraform init
+
+# 2️⃣ Vérifier le plan (voir ce qui sera créé)
+terraform plan -var="aggregate_id=12" -var="tag_ids=[\"commercial\"]"
+
+# 3️⃣ Appliquer le plan
+terraform apply -var="aggregate_id=12" -var="tag_ids=[\"commercial\"]"
+Remplacez aggregate_id par l’ID de votre aggregate ou du prefix parent.
+tag_ids peut être vide ou contenir un ou plusieurs tags qui sont déjà associés à ce prefix parent.
+
+8️⃣ Résumé rapide
+Étape	Fichier	Contenu clé
+1	provider	URL, token, skip_tls_verify = true
+2	data "netbox_prefix"	available = true, container = aggregate_id, length = 24, tags = …
+3	resource "netbox_prefix"	prefix = data.netbox_prefix.available_prefix.prefix, description, tags
+4	module	Regroupe le 2 & 3, expose allocated_prefix et allocated_prefix_id
+Vous avez maintenant un template Terraform complet et prêt à l’emploi pour réserver un CIDR /24 dans votre NetBox 4.3.3, tout en filtrant sur les tags du prefix parent. Bon déploiement !
+
+
+
+
+
+
+Utiliser un token d’environnement avec Terraform
+1️⃣ Le principe
+Terraform lit automatiquement les variables d’environnement qui suivent la convention
+
+TF_VAR_<nom_de_la_variable> = <valeur>
+Par exemple, pour la variable déclarée :
+
+variable "netbox_token" {
+  description = "Token API NetBox"
+  type        = string
+  sensitive   = true
+}
+vous pouvez la fournir depuis votre shell :
+
+export TF_VAR_netbox_token="3bac96ea-940b-444a-9757-a9a000282db3"
+Et Terraform l’utilisera sans que vous ayez besoin d’un default dans le fichier variables.tf.
+
+2️⃣ Mise à jour du fichier variables.tf
+variable "netbox_token" {
+  description = "Token d’API NetBox (peut être fourni via TF_VAR_netbox_token ou -var)"
+  type        = string
+  sensitive   = true
+}
+Remarque
+Si vous laissez la variable sans valeur par défaut, Terraform vous signalera une erreur lors de l’exécution s’il n’y a aucune valeur fournie (environnement, fichier .tfvars, -var, etc.).
+C’est exactement ce qu’on veut : vous ne voulez pas laisser le token dans le code source.
+
+3️⃣ Exemple complet (avec le module d’allocation)
+# main.tf
+terraform {
+  required_version = ">= 1.3"
+  required_providers {
+    netbox = {
+      source  = "cloudnativeapp/terraform-provider-netbox"
+      version = ">= 0.19.0"
+    }
+  }
+}
+
+provider "netbox" {
+  url             = var.netbox_url
+  token           = var.netbox_token
+  skip_tls_verify = true
+}
+
+module "prefix_alloc" {
+  source       = "./modules/prefix_alloc"
+  aggregate_id = var.aggregate_id
+  prefix_length= var.prefix_length
+  tag_ids      = var.tag_ids
+  description  = var.description
+  role         = var.role
+  status       = var.status
+}
+
+output "allocated_prefix" {
+  value = module.prefix_alloc.allocated_prefix
+}
+
+output "allocated_prefix_id" {
+  value = module.prefix_alloc.allocated_prefix_id
+}
+# variables.tf
+variable "netbox_url" {
+  description = "URL de l’instance NetBox"
+  type        = string
+  default     = "http://localhost:2025"
+}
+
+variable "netbox_token" {
+  description = "Token d’API NetBox (à mettre dans TF_VAR_netbox_token)"
+  type        = string
+  sensitive   = true
+}
+
+variable "aggregate_id" {
+  description = "ID de l’aggregate / prefix parent"
+  type        = number
+}
+
+variable "prefix_length" {
+  description = "Longueur du prefix à allouer (ex : 24 pour /24)"
+  type        = number
+  default     = 24
+}
+
+variable "tag_ids" {
+  description = "Liste de tags (nom ou id) à filtrer et à appliquer"
+  type        = list(string)
+  default     = []
+}
+
+variable "description" {
+  description = "Description du prefix alloué"
+  type        = string
+  default     = "Prefix alloué automatiquement par Terraform"
+}
+
+variable "role" {
+  description = "Rôle du prefix (facultatif)"
+  type        = string
+  default     = null
+}
+
+variable "status" {
+  description = "Statut du prefix (facultatif, ex : active)"
+  type        = string
+  default     = null
+}
+4️⃣ Exécution
+# 1️⃣ Exporter le token (une seule fois par session)
+export TF_VAR_netbox_token="3bac96ea-940b-444a-9757-a9a000282db3"
+
+# 2️⃣ Initialiser Terraform (télécharge les providers)
+terraform init
+
+# 3️⃣ Vérifier le plan
+terraform plan -var="aggregate_id=12" -var="tag_ids=[\"commercial\"]"
+
+# 4️⃣ Appliquer le plan
+terraform apply -var="aggregate_id=12" -var="tag_ids=[\"commercial\"]"
+Sécurité
+Le token est marqué sensitive, donc il ne sera pas affiché dans la sortie de terraform plan ou apply.
+Il ne sera pas enregistré dans le fichier terraform.tfstate non plus, ce qui évite toute fuite accidentelle.
+
+🎉 Résumé
+Supprimez le default du netbox_token.
+Exportez la variable d’environnement TF_VAR_netbox_token.
+Terraform l’utilisera automatiquement, sans que le token soit codé en clair dans vos fichiers.
+Vous avez maintenant un template sécurisé et prêt à l’emploi !
+
+Downloading model
