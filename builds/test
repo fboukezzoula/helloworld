@@ -1,0 +1,95 @@
+Why does terraform plan show “No changes”?
+terraform plan only shows changes that will be made to the managed infrastructure.
+If the output is
+
+No changes. Infrastructure is up-to-date.
+it means that, according to Terraform, everything you are trying to create already exists (or there are no resources to create at all).
+Below are the most common reasons for that message and how to fix / debug it.
+
+1️⃣ You really have nothing to create
+Initial run – you’ve already applied the configuration once.
+The resources you defined (netbox_prefix.allocated) already exist in NetBox, so a new plan finds nothing new to do.
+
+You’re not actually creating any resources – the only Terraform objects you defined are data sources (data "netbox_prefix" …).
+Data sources read data; they do not produce a plan‑time change.
+If the only objects in your module are data sources, terraform plan will always say “No changes”.
+
+2️⃣ The reservation list is empty
+In the root main.tf we use
+
+locals {
+  reservations = [
+    # …add entries here
+  ]
+}
+If that list is empty, the for_each over the module will create zero instances, so nothing is added to the plan.
+
+Fix – make sure the list contains at least one element:
+
+locals {
+  reservations = [
+    {
+      name          = "example"
+      aggregate_id  = 123
+      prefix_length = 24
+      tag_ids       = []
+    }
+  ]
+}
+3️⃣ The module is instantiated with count = 0 or an empty for_each
+If you control the number of instances via a variable like
+
+variable "reservation_count" { type = number; default = 0 }
+and then use
+
+module "prefix_alloc" {
+  count = var.reservation_count
+  ...
+}
+a value of 0 will also produce no changes.
+
+4️⃣ Wrong provider / alias – the module is not actually creating anything
+If the module uses an alias that you haven’t configured, the provider can’t actually create the prefix and Terraform will skip the resource.
+In that case you’ll see a warning in the plan (e.g. “Provider was not found”), but if you suppressed it you might get “No changes”.
+
+Fix – make sure the module is bound to the right provider:
+
+module "prefix_alloc" {
+  source = "./modules/prefix_alloc"
+
+  providers = {
+    netbox = netbox.prod   # ← pick the correct alias
+  }
+  ...
+}
+5️⃣ Debugging tips
+Inspect what Terraform thinks is the state
+
+terraform state list
+If you see nothing or only data‑sources, the plan is correct.
+
+Look at the plan file
+
+terraform plan -out=tfplan
+terraform show tfplan
+This prints the raw plan. Search for netbox_prefix.allocated – if it’s missing, the module isn’t instantiated.
+
+Check the local variable
+
+terraform console
+> length(local.reservations)
+Should be > 0.
+
+Force a recreation
+
+If you want to force Terraform to re‑evaluate the data source and create a new prefix, you can use a local-exec to change a value (e.g. a dummy null_resource with triggers that change each time) or simply delete the existing prefix in NetBox so that the data source finds a free address.
+
+✅ Bottom line
+No changes → either you already created the resources or nothing in the config asks Terraform to create anything.
+Verify the reservation list, the use of count / for_each, and that the module actually contains a resource (not just a data source).
+Check that the provider alias is correctly bound to the module.
+Once the module is instantiated and the reservation list is non‑empty, a subsequent terraform plan will show the planned creations, and terraform apply will create the CIDR prefixes in NetBox.
+
+Downloading model
+0 B / 0 B (0%)
+Send a message
