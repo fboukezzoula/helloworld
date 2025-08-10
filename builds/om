@@ -1,30 +1,15 @@
-🔧 Faire en sorte que le module prefix_alloc utilise un provider alias
-Vous avez déjà un provider NetBox déclaré à la racine :
+1️⃣ What the error says
+the providers argument requires a provider type name, optionally followed by a period and the configuration file
+In the providers map:
 
-provider "netbox" {
-  url             = var.netbox_url
-  token           = var.netbox_token
-  skip_tls_verify = true
-}
-Mais vous voulez que le module puisse choisir l’un des deux alias (ex : netbox.staging ou netbox.prod).
-Pour cela :
+Key – the provider type name (netbox).
+Value – a provider instance (netbox.prod, netbox.staging, …).
+The value must be a literal provider alias expression; you cannot compute it with array‑index syntax.
+2️⃣ Fix: use a lookup‑map
+Create a map that ties your environment names ("prod", "staging") to the corresponding provider alias. Then use that map in the module:
 
-Déclarez plusieurs providers à la racine, chacun avec un alias.
-Passez l’alias au module grâce à l’attribut providers du bloc module.
-Dans le module, ne déclarez plus de bloc provider – Terraform l’associera automatiquement à l’alias transmis.
-1️⃣ Racine – main.tf
-terraform {
-  required_version = ">= 1.3"
-
-  required_providers {
-    netbox = {
-      source  = "cloudnativeapp/terraform-provider-netbox"
-      version = ">= 0.19.0"
-    }
-  }
-}
-
-# ---- Provider « production » --------------------------------------------
+# ---  In the root module (main.tf) ------------------------------------------
+#  Define the provider aliases
 provider "netbox" {
   alias          = "prod"
   url            = var.netbox_prod_url
@@ -32,7 +17,6 @@ provider "netbox" {
   skip_tls_verify = true
 }
 
-# ---- Provider « staging » -----------------------------------------------
 provider "netbox" {
   alias          = "staging"
   url            = var.netbox_staging_url
@@ -40,38 +24,19 @@ provider "netbox" {
   skip_tls_verify = true
 }
 
-# ---- Variables ------------------------------------------------------------
-variable "netbox_prod_url"        { type = string; default = "https://netbox.prod.example.com" }
-variable "netbox_prod_token"      { type = string; sensitive = true }
-variable "netbox_staging_url"    { type = string; default = "https://netbox.staging.example.com" }
-variable "netbox_staging_token"  { type = string; sensitive = true }
-
-# ---- Liste de réservations -----------------------------------------------
+#  A helper map that Terraform can use to look up the right alias
 locals {
-  reservations = [
-    {
-      name          = "private_rfc1918"
-      aggregate_id  = 10
-      prefix_length = 24
-      tag_ids       = []
-      env          = "prod"        # <- on indiquera l’alias
-    },
-    {
-      name          = "bgp_public"
-      aggregate_id  = 20
-      prefix_length = 24
-      tag_ids       = ["bgp"]
-      env          = "staging"
-    }
-  ]
+  provider_aliases = {
+    prod    = netbox.prod
+    staging = netbox.staging
+  }
 }
 
-# ---- Instanciation du module -----------------------------------------------
+# ---  Module invocation ----------------------------------------------------
 module "prefix_alloc" {
   for_each = { for r in local.reservations : r.name => r }
 
-  source = "./modules/prefix_alloc"
-
+  source        = "./modules/prefix_alloc"
   aggregate_id  = each.value.aggregate_id
   prefix_length = each.value.prefix_length
   tag_ids       = each.value.tag_ids
@@ -79,60 +44,19 @@ module "prefix_alloc" {
   role          = null
   status        = "active"
 
-  # **L’alias est passé ici !** -----------------------------------------------
+  # *** Pass the right provider instance to the module ***
   providers = {
-    netbox = netbox[each.value.env]   # `netbox.prod` ou `netbox.staging`
+    netbox = local.provider_aliases[each.value.env]
   }
 }
+What changed?
+Before	After
+providers = { netbox = netbox[each.value.env] }	providers = { netbox = local.provider_aliases[each.value.env] }
+netbox[each.value.env] (unsupported)	local.provider_aliases[each.value.env] (a lookup that returns the alias expression netbox.prod or netbox.staging)
+3️⃣ Quick sanity check
+After the change run:
 
-# ---- Sorties ---------------------------------------------------------------
-output "allocated_prefixes" {
-  description = "Map de nom => CIDR alloué"
-  value       = { for k, m in module.prefix_alloc : k => m.allocated_prefix }
-}
-
-output "allocated_prefix_ids" {
-  description = "Map de nom => ID NetBox du prefix alloué"
-  value       = { for k, m in module.prefix_alloc : k => m.allocated_prefix_id }
-}
-⚠️ Remarque
-each.value.env doit être l’un des alias définis ("prod" ou "staging").
-Vous pouvez aussi créer une variable provider_env = "prod" / "staging" et l’utiliser directement.
-
-2️⃣ Module – modules/prefix_alloc/main.tf
-Ne mettez plus de bloc provider.
-Le provider sera injecté depuis la racine via providers = { netbox = netbox.prod } (ou staging).
-
-# ── Recherche d’un /24 disponible ----------------------------------------
-data "netbox_prefix" "available_prefix" {
-  available = true
-  container = var.aggregate_id
-  length    = var.prefix_length
-  tags      = var.tag_ids
-}
-
-# ── Création du prefix ----------------------------------------------------
-resource "netbox_prefix" "allocated" {
-  prefix      = data.netbox_prefix.available_prefix.prefix
-  description = var.description
-  role        = var.role
-  status      = var.status
-  tags        = var.tag_ids
-}
-Aucun provider n’est présent ici – Terraform l’associera à l’alias reçu depuis la racine.
-
-3️⃣ Variables du module (inchangées) – modules/prefix_alloc/variables.tf
-variable "aggregate_id"  { type = number }
-variable "prefix_length" { type = number }
-variable "tag_ids"       { type = list(string); default = [] }
-variable "description"   { type = string }
-variable "role"          { type = string; default = null }
-variable "status"        { type = string; default = null }
-4️⃣ Sorties du module – modules/prefix_alloc/outputs.tf
-output "allocated_prefix"   { value = netbox_prefix.allocated.prefix }
-output "allocated_prefix_id" { value = netbox_prefix.allocated.id }
-Résultat
-Chaque réservation dans local.reservations indique quel alias (prod ou staging) doit être utilisé.
-Le bloc module "prefix_alloc" transmet explicitement l’alias (providers = { netbox = netbox.prod } ou netbox.staging).
-Le module utilise ce provider, sans déclarer de bloc provider.
-Si vous ajoutez un troisième environment (netbox.dev), ajoutez simplement un autre provider avec alias dev et étendez locals.reservations.env.
+terraform init          # pulls e‑breuninger/netbox
+terraform plan
+terraform apply
+You should see in the plan that the resources are created against the correct URL/token (i.e. the prod or staging alias you selected). If you still get a provider‑reference error, double‑check that the alias names (prod, staging) match exactly between the provider blocks and the keys you use in locals.provider_aliases.
