@@ -1,0 +1,154 @@
+⚠️ Problème :
+“Le module utilise le provider hashicorp/netbox”
+
+C’est tout simplement parce que votre bloc required_providers pointe vers un provider qui n’existe pas dans le registre Terraform : hashicorp/netbox.
+
+Le provider officiel de NetBox s’appelle cloudnativeapp/terraform-provider-netbox (ou, dans les versions plus récentes, netbox-netbox/netbox – mais l’outil officiel reste celui de cloudnativeapp).
+
+🔧 Étapes pour corriger
+Ouvrez votre fichier main.tf racine (ou le fichier où vous avez déclaré le provider).
+Remplacez la section required_providers par :
+terraform {
+  required_version = ">= 1.3"
+
+  required_providers {
+    netbox = {
+      source  = "cloudnativeapp/terraform-provider-netbox"
+      version = ">= 0.19.0"      # ou la version que vous avez testée
+    }
+  }
+}
+Supprimez toute autre déclaration (par exemple source = "hashicorp/netbox" ou source = "netbox/netbox").
+Enregistrez le fichier, puis exécutez :
+terraform init -upgrade
+Pourquoi -upgrade ?
+Cela force Terraform à télécharger la dernière version du provider officiel (et à le remplacer si une version plus récente est disponible).
+
+📦 Vérification rapide
+terraform providers
+Vous devriez voir :
+
+. provider[registry.terraform.io/cloudnativeapp/netbox] 0.19.0
+et non plus :
+
+provider[registry.terraform.io/hashicorp/netbox] ...
+🚀 Si vous avez un fichier versions.tf
+Si vous avez un fichier versions.tf séparé, assurez‑vous de le mettre à jour de la même façon :
+
+terraform {
+  required_version = ">= 1.3"
+
+  required_providers {
+    netbox = {
+      source  = "cloudnativeapp/terraform-provider-netbox"
+      version = ">= 0.19.0"
+    }
+  }
+}
+🎉 Résumé
+Action	Résultat
+Remplacer hashicorp/netbox par cloudnativeapp/terraform-provider-netbox	Le provider officiel est téléchargé et utilisé
+Exécuter terraform init -upgrade	L’installation du provider est mise à jour
+Vérifier avec terraform providers	Vous voyez bien le provider officiel dans la liste
+Une fois ces changements effectués, votre module prefix_alloc devrait fonctionner correctement ! 🚀
+
+c'est le module prefix_alloc qui n'utilise pas le bon provider
+edit
+Thought for 2.0 seconds
+
+🔧 Pourquoi le module prefix_alloc “utilise” le mauvais provider ?
+Dans votre configuration, le provider n’est déclaré qu’au niveau racine :
+
+terraform {
+  required_providers {
+    netbox = {
+      source  = "cloudnativeapp/terraform-provider-netbox"
+      version = ">= 0.19.0"
+    }
+  }
+}
+
+provider "netbox" {
+  url  = var.netbox_url
+  token = var.netbox_token
+}
+Le module prefix_alloc ne contient pas de bloc provider.
+Par défaut, un module hérite du provider qui l’est déclaré dans le fichier racine.
+S’il affiche un message d’erreur indiquant qu’il “utilise” le provider hashicorp/netbox, c’est que :
+
+Le module a un bloc provider qui pointe vers hashicorp/netbox (ou un alias qui le fait).
+Ou le code du module fait référence à un provider nommé netbox mais Terraform l’associe à un provider différent (ex : si vous avez un alias provider "netbox" {} dans un autre module ou fichier).
+✅ Comment corriger ?
+1️⃣ Retirer tout bloc provider du module
+Dans modules/prefix_alloc/main.tf :
+
+# Aucun bloc "provider" ici
+data "netbox_prefix" "available_prefix" {
+  available = true
+  container = var.aggregate_id
+  length    = var.prefix_length
+  tags      = var.tag_ids
+}
+
+resource "netbox_prefix" "allocated" {
+  prefix      = data.netbox_prefix.available_prefix.prefix
+  description = var.description
+  role        = var.role
+  status      = var.status
+  tags        = var.tag_ids
+}
+Important : Si vous avez accidentellement ajouté :
+
+provider "netbox" {
+  alias = "wrong"
+}
+supprimez-le.
+
+2️⃣ Utiliser un alias (si besoin)
+Si votre projet a plusieurs instances du provider NetBox (ex : un provider pour l’environnement de staging et un autre pour production), vous devez :
+
+Déclarer deux providers à la racine avec des alias :
+provider "netbox" {
+  alias          = "staging"
+  url            = var.netbox_staging_url
+  token          = var.netbox_staging_token
+  skip_tls_verify = true
+}
+
+provider "netbox" {
+  alias          = "prod"
+  url            = var.netbox_prod_url
+  token          = var.netbox_prod_token
+  skip_tls_verify = true
+}
+Faire pointer le module vers l’alias voulu :
+module "prefix_alloc" {
+  source = "./modules/prefix_alloc"
+
+  providers = {
+    netbox = netbox.staging   # ← ici on indique quel provider
+  }
+
+  aggregate_id  = var.aggregate_id
+  prefix_length = var.prefix_length
+  tag_ids       = var.tag_ids
+  description   = var.description
+}
+Remarque : Le bloc providers au niveau du module remplace le provider par défaut pour ce module seulement.
+
+3️⃣ Vérifier la configuration
+terraform init
+terraform plan
+Vous ne devriez plus voir l’erreur concernant hashicorp/netbox.
+
+📌 Résumé rapide
+Étape	Action	Résultat
+1	Supprimez tout bloc provider dans modules/prefix_alloc	Le module n’utilise plus de provider local
+2	Si vous avez plusieurs instances de NetBox, utilisez un alias dans la racine	Vous gérez deux connexions distinctes
+3	Passez l’alias correct via providers = { netbox = netbox.alias }	Le module pointe vers le provider voulu
+3	terraform init && terraform plan	Pas d’erreur de provider, module fonctionne
+Vous avez désormais le module prefix_alloc qui utilise le bon provider NetBox (celui fourni par cloudnativeapp).
+Bonne continuation ! 🚀
+
+Downloading model
+0 B / 0 B (0%)
