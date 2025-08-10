@@ -1,3 +1,75 @@
+1. Verify the provider blocks
+Make sure you have exactly two provider blocks (no default provider block) and that the alias names match what you use in the module:
+
+# root (main.tf)
+terraform {
+  required_providers {
+    netbox = {
+      source  = "e-breuninger/netbox"
+      version = ">= 1.12.2"   # or whatever version you’re using
+    }
+  }
+}
+
+provider "netbox" {
+  alias          = "prod"
+  url            = var.netbox_prod_url
+  token          = var.netbox_prod_token
+  skip_tls_verify = true
+}
+
+provider "netbox" {
+  alias          = "staging"
+  url            = var.netbox_staging_url
+  token          = var.netbox_staging_token
+  skip_tls_verify = true
+}
+Important – don’t leave a third, non‑aliased netbox block in the same configuration. If you have one, delete it.
+
+2. Two clean ways to wire the module to the correct alias
+Option A – Two separate module blocks (recommended for two environments)
+# prod
+module "prefix_alloc_prod" {
+  for_each = { for r in local.reservations : r.name => r if r.env == "prod" }
+
+  source        = "./modules/prefix_alloc"
+  aggregate_id  = each.value.aggregate_id
+  prefix_length = each.value.prefix_length
+  tag_ids       = each.value.tag_ids
+  description   = "Allocated by Terraform (${each.key})"
+  role          = null
+  status        = "active"
+
+  # Literal provider address – no expressions allowed
+  providers = {
+    netbox = netbox.prod
+  }
+}
+
+# staging
+module "prefix_alloc_staging" {
+  for_each = { for r in local.reservations : r.name => r if r.env == "staging" }
+
+  source        = "./modules/prefix_alloc"
+  aggregate_id  = each.value.aggregate_id
+  prefix_length = each.value.prefix_length
+  tag_ids       = each.value.tag_ids
+  description   = "Allocated by Terraform (${each.key})"
+  role          = null
+  status        = "active"
+
+  providers = {
+    netbox = netbox.staging
+  }
+}
+Because each block has a hard‑coded provider address, Terraform parses it without issue.
+
+Option B – One module block but no provider expressions (must use a
+literal provider per resource)
+
+If you really want to keep a single module "prefix_alloc" block, you can skip the providers = { … } map entirely and instead give each resource inside the module its own provider = … argument:
+
+# root
 module "prefix_alloc" {
   for_each = { for r in local.reservations : r.name => r }
 
@@ -8,32 +80,58 @@ module "prefix_alloc" {
   description   = "Allocated by Terraform (${each.key})"
   role          = null
   status        = "active"
-
-  # Pick the provider based on the env value
-  providers = {
-    netbox = each.value.env == "prod" ? netbox.prod : netbox.staging
-  }
 }
 
+# inside modules/prefix_alloc/main.tf
+resource "netbox_prefix" "allocated" {
+  provider = each.value.env == "prod" ? netbox.prod : netbox.staging
+  # …rest of the resource definition
+}
+Here the provider is attached to the resource itself.
+Terraform allows an expression for provider = … because it’s evaluated per‑resource, not during parsing of the module block.
 
-1️⃣ What you need to do
-Step	Why it matters
-Upgrade Terraform to at least 0.13 (preferably the latest stable 1.7+)	Only from 0.13 onward does Terraform support providers = { <type> = <alias> } in module blocks.
-Keep your provider block as you had it (aliases prod, staging).	No change needed.
-Use the exact syntax in the module: providers = { netbox = netbox.prod } (or the conditional form).	After upgrading, this will be parsed correctly.
-2️⃣ Upgrade instructions
-Download the latest Terraform binary (or use the HashiCorp installer).
+3. Check what Terraform sees
+After you’ve cleaned up the configuration:
 
-# For example on macOS/Linux
-curl -LO https://releases.hashicorp.com/terraform/1.7.4/terraform_1.7.4_linux_amd64.zip
-unzip terraform_1.7.4_linux_amd64.zip
-sudo mv terraform /usr/local/bin/
-Verify:
+$ terraform init -upgrade          # downloads the correct provider
+$ terraform providers              # list configured providers
+You should see something like:
 
-terraform version
-# should show something like: Terraform v1.7.4
-Re‑run your configuration:
+netbox.prod:     URL: <your prod URL>  Token: <masked>
+netbox.staging:  URL: <your staging URL> Token: <masked>
+If netbox.prod or netbox.staging are not listed, the alias was never created – double‑check the provider blocks for typos or duplicate blocks.
 
-terraform init
-terraform plan
-terraform apply
+4. Run a minimal test
+To make sure the problem is really the providers argument and not something else, create a tiny test that just calls the module once with a hard‑coded provider:
+
+module "prefix_alloc_test" {
+  source = "./modules/prefix_alloc"
+
+  aggregate_id  = 10
+  prefix_length = 24
+  tag_ids       = []
+  description   = "Test"
+  role          = null
+  status        = "active"
+
+  providers = {
+    netbox = netbox.prod   # <-- literal, no expression
+  }
+}
+If this succeeds, you know the provider blocks are correct.
+If it still fails, run terraform providers and post the output – that will show whether Terraform actually recognizes the netbox.prod alias.
+
+5. Common “gotchas”
+Symptom	Likely cause	Fix
+invalid provider configuration reference on a module line	Provider alias referenced as a string (e.g. netbox.prod inside quotes, or via a map lookup)	Use a literal provider address (netbox.prod or netbox.staging).
+Same error on resource lines	Resource uses provider = "netbox.prod" (string)	Use identifier: provider = netbox.prod (no quotes).
+No error at all but module resources still use default provider	There is a non‑aliased provider block in the same root	Remove the non‑aliased block.
+6. Final checklist
+Provider blocks – two blocks only, correct alias names.
+terraform init -upgrade – re‑download provider.
+terraform providers – confirm netbox.prod and netbox.staging are listed.
+Module invocation – use literal provider addresses (no expressions/lookup).
+Once you do that, the “invalid provider configuration reference” should disappear and the plan/apply will run normally. If it still happens, paste the output of terraform providers so we can see exactly what Terraform is seeing.
+
+Downloading model
+0 B / 0 B (0%)
