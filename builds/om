@@ -14,3 +14,26 @@ module "prefix_alloc" {
     netbox = each.value.env == "prod" ? netbox.prod : netbox.staging
   }
 }
+
+
+1️⃣ What you need to do
+Step	Why it matters
+Upgrade Terraform to at least 0.13 (preferably the latest stable 1.7+)	Only from 0.13 onward does Terraform support providers = { <type> = <alias> } in module blocks.
+Keep your provider block as you had it (aliases prod, staging).	No change needed.
+Use the exact syntax in the module: providers = { netbox = netbox.prod } (or the conditional form).	After upgrading, this will be parsed correctly.
+2️⃣ Upgrade instructions
+Download the latest Terraform binary (or use the HashiCorp installer).
+
+# For example on macOS/Linux
+curl -LO https://releases.hashicorp.com/terraform/1.7.4/terraform_1.7.4_linux_amd64.zip
+unzip terraform_1.7.4_linux_amd64.zip
+sudo mv terraform /usr/local/bin/
+Verify:
+
+terraform version
+# should show something like: Terraform v1.7.4
+Re‑run your configuration:
+
+terraform init
+terraform plan
+terraform apply
