@@ -1,38 +1,3 @@
-1️⃣ What the error says
-the providers argument requires a provider type name, optionally followed by a period and the configuration file
-In the providers map:
-
-Key – the provider type name (netbox).
-Value – a provider instance (netbox.prod, netbox.staging, …).
-The value must be a literal provider alias expression; you cannot compute it with array‑index syntax.
-2️⃣ Fix: use a lookup‑map
-Create a map that ties your environment names ("prod", "staging") to the corresponding provider alias. Then use that map in the module:
-
-# ---  In the root module (main.tf) ------------------------------------------
-#  Define the provider aliases
-provider "netbox" {
-  alias          = "prod"
-  url            = var.netbox_prod_url
-  token          = var.netbox_prod_token
-  skip_tls_verify = true
-}
-
-provider "netbox" {
-  alias          = "staging"
-  url            = var.netbox_staging_url
-  token          = var.netbox_staging_token
-  skip_tls_verify = true
-}
-
-#  A helper map that Terraform can use to look up the right alias
-locals {
-  provider_aliases = {
-    prod    = netbox.prod
-    staging = netbox.staging
-  }
-}
-
-# ---  Module invocation ----------------------------------------------------
 module "prefix_alloc" {
   for_each = { for r in local.reservations : r.name => r }
 
@@ -44,19 +9,8 @@ module "prefix_alloc" {
   role          = null
   status        = "active"
 
-  # *** Pass the right provider instance to the module ***
+  # Pick the provider based on the env value
   providers = {
-    netbox = local.provider_aliases[each.value.env]
+    netbox = each.value.env == "prod" ? netbox.prod : netbox.staging
   }
 }
-What changed?
-Before	After
-providers = { netbox = netbox[each.value.env] }	providers = { netbox = local.provider_aliases[each.value.env] }
-netbox[each.value.env] (unsupported)	local.provider_aliases[each.value.env] (a lookup that returns the alias expression netbox.prod or netbox.staging)
-3️⃣ Quick sanity check
-After the change run:
-
-terraform init          # pulls e‑breuninger/netbox
-terraform plan
-terraform apply
-You should see in the plan that the resources are created against the correct URL/token (i.e. the prod or staging alias you selected). If you still get a provider‑reference error, double‑check that the alias names (prod, staging) match exactly between the provider blocks and the keys you use in locals.provider_aliases.
