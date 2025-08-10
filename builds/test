@@ -1,95 +1,223 @@
-Why does terraform plan show “No changes”?
-terraform plan only shows changes that will be made to the managed infrastructure.
-If the output is
+Structure du projet
+terraform-netbox/
+├── main.tf                 # Entrée principale
+├── variables.tf            # Variables globales
+├── outputs.tf              # Sorties globales
+├── versions.tf             # Déclaration du provider NetBox
+└── modules/
+    └── prefix_alloc/
+        ├── main.tf         # Logique de réservation d’un /24
+        ├── variables.tf    # Variables du module
+        └── outputs.tf      # Sorties du module
+🔑 Contenu complet
+1️⃣ main.tf (racine)
+terraform {
+  required_version = ">= 1.3"
 
-No changes. Infrastructure is up-to-date.
-it means that, according to Terraform, everything you are trying to create already exists (or there are no resources to create at all).
-Below are the most common reasons for that message and how to fix / debug it.
-
-1️⃣ You really have nothing to create
-Initial run – you’ve already applied the configuration once.
-The resources you defined (netbox_prefix.allocated) already exist in NetBox, so a new plan finds nothing new to do.
-
-You’re not actually creating any resources – the only Terraform objects you defined are data sources (data "netbox_prefix" …).
-Data sources read data; they do not produce a plan‑time change.
-If the only objects in your module are data sources, terraform plan will always say “No changes”.
-
-2️⃣ The reservation list is empty
-In the root main.tf we use
-
-locals {
-  reservations = [
-    # …add entries here
-  ]
+  required_providers {
+    netbox = {
+      source  = "cloudnativeapp/terraform-provider-netbox"
+      version = ">= 0.19.0"
+    }
+  }
 }
-If that list is empty, the for_each over the module will create zero instances, so nothing is added to the plan.
 
-Fix – make sure the list contains at least one element:
+# --- Provider à la racine (sans alias) -----------------------------------
+provider "netbox" {
+  url             = var.netbox_url
+  token           = var.netbox_token
+  skip_tls_verify = true
+}
 
+# --- Exemple de liste de réservations ------------------------------------
 locals {
   reservations = [
     {
-      name          = "example"
-      aggregate_id  = 123
+      name          = "private_rfc1918"
+      aggregate_id  = 10          # ID d’un aggregate 10.0.0.0/8 dans NetBox
       prefix_length = 24
-      tag_ids       = []
+      tag_ids       = []          # pas de tags à filtrer
+    },
+    {
+      name          = "bgp_public"
+      aggregate_id  = 20          # ID d’un aggregate 203.0.113.0/24 dans NetBox
+      prefix_length = 24
+      tag_ids       = ["bgp"]     # tag(s) qui doivent être présents
     }
   ]
 }
-3️⃣ The module is instantiated with count = 0 or an empty for_each
-If you control the number of instances via a variable like
 
-variable "reservation_count" { type = number; default = 0 }
-and then use
-
+# --- Instanciation du module pour chaque réservation ----------------------
 module "prefix_alloc" {
-  count = var.reservation_count
-  ...
+  for_each = { for r in local.reservations : r.name => r }
+
+  source       = "./modules/prefix_alloc"
+  aggregate_id = each.value.aggregate_id
+  prefix_length = each.value.prefix_length
+  tag_ids     = each.value.tag_ids
+  description = "Allocated by Terraform (${each.key})"
+  role        = null
+  status      = "active"
 }
-a value of 0 will also produce no changes.
 
-4️⃣ Wrong provider / alias – the module is not actually creating anything
-If the module uses an alias that you haven’t configured, the provider can’t actually create the prefix and Terraform will skip the resource.
-In that case you’ll see a warning in the plan (e.g. “Provider was not found”), but if you suppressed it you might get “No changes”.
+# --- Sorties de haut niveau ----------------------------------------------
+output "allocated_prefixes" {
+  description = "Map de nom => CIDR alloué"
+  value       = { for k, m in module.prefix_alloc : k => m.allocated_prefix }
+}
 
-Fix – make sure the module is bound to the right provider:
+output "allocated_prefix_ids" {
+  description = "Map de nom => ID NetBox du prefix alloué"
+  value       = { for k, m in module.prefix_alloc : k => m.allocated_prefix_id }
+}
+2️⃣ variables.tf (racine)
+variable "netbox_url" {
+  description = "URL de l’instance NetBox (ex : http://localhost:2025)"
+  type        = string
+  default     = "http://localhost:2025"
+}
 
-module "prefix_alloc" {
-  source = "./modules/prefix_alloc"
+# On ne donne pas de default pour le token – il sera fourni via TF_VAR_…
+variable "netbox_token" {
+  description = "Token d’API NetBox (à mettre dans TF_VAR_netbox_token)"
+  type        = string
+  sensitive   = true
+}
 
-  providers = {
-    netbox = netbox.prod   # ← pick the correct alias
+variable "aggregate_id" { /* pas utilisé directement ici, mais présent pour documentation */
+  description = "Id d’aggregate (pour les variables locales)"
+  type        = number
+}
+Important
+Si vous utilisez un token d’environnement vous n’avez rien à mettre dans default.
+
+export TF_VAR_netbox_token="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+3️⃣ outputs.tf (racine)
+output "allocated_prefixes" {
+  description = "Map de nom => CIDR alloué"
+  value       = { for k, m in module.prefix_alloc : k => m.allocated_prefix }
+}
+
+output "allocated_prefix_ids" {
+  description = "Map de nom => ID NetBox du prefix alloué"
+  value       = { for k, m in module.prefix_alloc : k => m.allocated_prefix_id }
+}
+4️⃣ versions.tf (racine)
+(Facultatif – il suffit d’avoir le bloc required_providers dans main.tf, mais pour garder les choses séparées on peut le mettre dans un fichier dédié)
+
+terraform {
+  required_version = ">= 1.3"
+
+  required_providers {
+    netbox = {
+      source  = "cloudnativeapp/terraform-provider-netbox"
+      version = ">= 0.19.0"
+    }
   }
-  ...
 }
-5️⃣ Debugging tips
-Inspect what Terraform thinks is the state
+5️⃣ modules/prefix_alloc/main.tf
+# --- Données pour trouver un /24 disponible dans l’aggregate --------------
+data "netbox_prefix" "available_prefix" {
+  available = true
+  container = var.aggregate_id
+  length    = var.prefix_length
+  tags      = var.tag_ids
+}
 
-terraform state list
-If you see nothing or only data‑sources, the plan is correct.
+# --- Création réelle du prefix -------------------------------------------
+resource "netbox_prefix" "allocated" {
+  prefix      = data.netbox_prefix.available_prefix.prefix
+  description = var.description
+  role        = var.role
+  status      = var.status
+  tags        = var.tag_ids
+}
+6️⃣ modules/prefix_alloc/variables.tf
+variable "aggregate_id" {
+  description = "ID du container (aggregate) à partir duquel réserver"
+  type        = number
+}
 
-Look at the plan file
+variable "prefix_length" {
+  description = "Longueur du prefix à réserver (24 pour un /24)"
+  type        = number
+}
 
-terraform plan -out=tfplan
-terraform show tfplan
-This prints the raw plan. Search for netbox_prefix.allocated – if it’s missing, the module isn’t instantiated.
+variable "tag_ids" {
+  description = "Tags qui doivent être présents sur le prefix (optionnel)"
+  type        = list(string)
+  default     = []
+}
 
-Check the local variable
+variable "description" {
+  description = "Description qui sera ajoutée dans NetBox"
+  type        = string
+}
 
-terraform console
-> length(local.reservations)
-Should be > 0.
+variable "role" {
+  description = "Rôle NetBox (optionnel)"
+  type        = string
+  default     = null
+}
 
-Force a recreation
+variable "status" {
+  description = "Statut NetBox (ex : 'active')"
+  type        = string
+  default     = null
+}
+7️⃣ modules/prefix_alloc/outputs.tf
+output "allocated_prefix" {
+  description = "Le CIDR alloué"
+  value       = netbox_prefix.allocated.prefix
+}
 
-If you want to force Terraform to re‑evaluate the data source and create a new prefix, you can use a local-exec to change a value (e.g. a dummy null_resource with triggers that change each time) or simply delete the existing prefix in NetBox so that the data source finds a free address.
+output "allocated_prefix_id" {
+  description = "Id NetBox du prefix créé"
+  value       = netbox_prefix.allocated.id
+}
+✅ Comment l’utiliser
+Initialisation
 
-✅ Bottom line
-No changes → either you already created the resources or nothing in the config asks Terraform to create anything.
-Verify the reservation list, the use of count / for_each, and that the module actually contains a resource (not just a data source).
-Check that the provider alias is correctly bound to the module.
-Once the module is instantiated and the reservation list is non‑empty, a subsequent terraform plan will show the planned creations, and terraform apply will create the CIDR prefixes in NetBox.
+cd terraform-netbox
+terraform init
+Vérifiez que vous avez fourni un token
+
+export TF_VAR_netbox_token="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+Voir le plan
+
+terraform plan
+Vous devriez voir « netbox_prefix.allocated » dans la liste des ressources créées.
+
+Appliquer
+
+terraform apply
+🚀 Variante avec plusieurs aggregates via count
+Si vous ne voulez pas gérer la liste dans un local, vous pouvez passer une variable de type list(object({ … })) et l’utiliser avec for_each comme montré ci‑dessus.
+Pour un simple /24, la liste ne contient qu’un seul élément.
+
+🛠️ Bonus : Utiliser l’environnent
+Vous pouvez lier le token à la variable netbox_token avec :
+
+variable "netbox_token" {
+  description = "Token d’API NetBox (à mettre dans TF_VAR_netbox_token)"
+  type        = string
+  sensitive   = true
+}
+Et dans votre shell :
+
+export TF_VAR_netbox_token="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+Aucune valeur par défaut n’est alors nécessaire et Terraform gardera le champ sensible hors‑ligne.
+
+📜 Résumé
+Chemin	Fichier	Contenu
+main.tf	Racine	Provider, provider‑definition, locals, for_each module, outputs
+variables.tf	Racine	netbox_url, netbox_token (sans default)
+outputs.tf	Racine	allocated_prefixes, allocated_prefix_ids
+versions.tf	Racine	Provider NetBox (facultatif mais recommandé)
+modules/prefix_alloc/main.tf	Module	Data source + resource NetBox prefix
+modules/prefix_alloc/variables.tf	Module	aggregate_id, prefix_length, tag_ids, description, role, status
+modules/prefix_alloc/outputs.tf	Module	allocated_prefix, allocated_prefix_id
+Avec ces fichiers, toutes les réservations listées dans local.reservations seront créées à chaque apply, et terraform plan vous montrera les changements à venir. 🚀
 
 Downloading model
 0 B / 0 B (0%)
-Send a message
