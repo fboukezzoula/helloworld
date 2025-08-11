@@ -1,0 +1,391 @@
+
+1️⃣ Principe
+Le CronJob tourne tous les jours à minuit.
+
+Il récupère les identifiants PostgreSQL dans un Secret de Kubernetes (ceux de NetBox).
+
+Il lance un pg_dump pour extraire la base.
+
+Il nomme le fichier par exemple :
+
+netbox_backup_2025-08-11_00-00.sql.gz
+Il stocke le dump soit dans un PVC, soit en le poussant vers un stockage externe (S3, GCS, etc.).
+
+2️⃣ Exemple CronJob YAML
+Voici un exemple qui sauvegarde dans un PVC local :
+
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: netbox-backup
+spec:
+  schedule: "0 0 * * *"  # tous les jours à minuit
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: netbox-backup
+            image: postgres:15  # contient pg_dump
+            env:
+              - name: PGHOST
+                valueFrom:
+                  secretKeyRef:
+                    name: netbox-db-secret
+                    key: host
+              - name: PGUSER
+                valueFrom:
+                  secretKeyRef:
+                    name: netbox-db-secret
+                    key: username
+              - name: PGPASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: netbox-db-secret
+                    key: password
+              - name: PGDATABASE
+                valueFrom:
+                  secretKeyRef:
+                    name: netbox-db-secret
+                    key: database
+            volumeMounts:
+              - name: backup-storage
+                mountPath: /backups
+            command:
+              - /bin/sh
+              - -c
+              - |
+                TIMESTAMP=$(date +"%Y-%m-%d_%H-%M")
+                pg_dump -Fc "$PGDATABASE" > /backups/netbox_backup_${TIMESTAMP}.dump
+                gzip /backups/netbox_backup_${TIMESTAMP}.dump
+          volumes:
+            - name: backup-storage
+              persistentVolumeClaim:
+                claimName: netbox-backup-pvc
+3️⃣ Points importants
+Récupérer les secrets NetBox
+Vérifie dans kubectl get secret -n <namespace> lequel contient les credentials PostgreSQL (netbox-postgres-credentials ou similaire).
+Les clés typiques : POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST.
+
+Stockage
+Si tu veux garder plusieurs jours de backups, utilise un PVC dédié.
+Sinon, tu peux envoyer directement vers un stockage S3 :
+
+
+pg_dump -Fc "$PGDATABASE" | gzip | aws s3 cp - s3://mybucket/netbox_backup_${TIMESTAMP}.dump.gz
+
+Rétention
+Un petit find /backups -type f -mtime +7 -delete peut être ajouté pour garder seulement 7 jours.
+
+📌 Astuce : Comme tu n’as pas accès au kubectl exec, le conteneur postgres dans le CronJob est la solution la plus simple. Tu te connectes directement à la DB grâce aux secrets, sans toucher aux pods NetBox existants.
+
+Si tu veux, je peux te préparer la version S3 avec rotation automatique au lieu d’un PVC local. Ce serait plus sûr pour un backup hors cluster.
+Veux-tu que je te fasse cette variante ?
+
+
+
+
+
+
+
+
+
+On va donc faire un CronJob Kubernetes qui :
+
+Se lance tous les jours à minuit
+
+Utilise l’image postgres pour pg_dump
+
+Installe rapidement awscli pour envoyer vers S3
+
+Utilise les secrets Kubernetes pour la DB et les credentials S3
+
+Ajoute une rotation (ex : garder seulement 7 jours sur S3)
+
+1️⃣ Secrets nécessaires
+Il faudra deux Secrets dans Kubernetes :
+
+netbox-db-secret (credentials PostgreSQL) :
+
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: netbox-db-secret
+type: Opaque
+stringData:
+  host: "netbox-postgres-service"
+  username: "netbox"
+  password: "monpassword"
+  database: "netbox"
+
+aws-s3-secret (credentials AWS) :
+
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aws-s3-secret
+type: Opaque
+stringData:
+  aws_access_key_id: "AKIAxxxxxxxxxxxx"
+  aws_secret_access_key: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  aws_region: "eu-west-3"
+  bucket_name: "mon-bucket-backup-netbox"
+2️⃣ CronJob vers S3 avec rotation
+yaml
+Copier
+Modifier
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: netbox-backup-s3
+spec:
+  schedule: "0 0 * * *" # tous les jours à minuit
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: netbox-backup
+            image: postgres:15
+            env:
+              - name: PGHOST
+                valueFrom:
+                  secretKeyRef:
+                    name: netbox-db-secret
+                    key: host
+              - name: PGUSER
+                valueFrom:
+                  secretKeyRef:
+                    name: netbox-db-secret
+                    key: username
+              - name: PGPASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: netbox-db-secret
+                    key: password
+              - name: PGDATABASE
+                valueFrom:
+                  secretKeyRef:
+                    name: netbox-db-secret
+                    key: database
+              - name: AWS_ACCESS_KEY_ID
+                valueFrom:
+                  secretKeyRef:
+                    name: aws-s3-secret
+                    key: aws_access_key_id
+              - name: AWS_SECRET_ACCESS_KEY
+                valueFrom:
+                  secretKeyRef:
+                    name: aws-s3-secret
+                    key: aws_secret_access_key
+              - name: AWS_DEFAULT_REGION
+                valueFrom:
+                  secretKeyRef:
+                    name: aws-s3-secret
+                    key: aws_region
+              - name: BUCKET_NAME
+                valueFrom:
+                  secretKeyRef:
+                    name: aws-s3-secret
+                    key: bucket_name
+            command:
+              - /bin/sh
+              - -c
+              - |
+                set -e
+                apt-get update && apt-get install -y awscli
+                TIMESTAMP=$(date +"%Y-%m-%d_%H-%M")
+                FILE_NAME="netbox_backup_${TIMESTAMP}.dump.gz"
+                echo "📦 Dump de la base..."
+                pg_dump -Fc "$PGDATABASE" | gzip > /tmp/$FILE_NAME
+                echo "☁️  Upload vers S3..."
+                aws s3 cp /tmp/$FILE_NAME s3://$BUCKET_NAME/$FILE_NAME
+                echo "🧹 Suppression des backups de plus de 7 jours..."
+                aws s3 ls s3://$BUCKET_NAME/ | awk '{print $4}' | \
+                  grep '^netbox_backup_' | \
+                  while read f; do
+                    FILE_DATE=$(echo $f | sed 's/netbox_backup_//' | sed 's/.dump.gz//')
+                    FILE_TS=$(date -d ${FILE_DATE//_/ } +%s)
+                    SEVEN_DAYS_AGO=$(date -d '7 days ago' +%s)
+                    if [ "$FILE_TS" -lt "$SEVEN_DAYS_AGO" ]; then
+                      echo "🗑 Suppression $f"
+                      aws s3 rm s3://$BUCKET_NAME/$f
+                    fi
+                  done
+3️⃣ Points clés
+Image postgres:15 → contient déjà pg_dump.
+
+Installation awscli à la volée (simple mais un peu plus lent au démarrage, on peut aussi créer une image custom pour éviter ça).
+
+Rotation 7 jours directement depuis S3 (pas besoin de garder localement).
+
+Pas besoin de PVC → les dumps vont directement dans S3.
+
+Si le cluster est en IAM Roles for Service Accounts, on peut éviter le secret AWS et donner directement une policy au ServiceAccount.
+
+
+
+
+
+
+
+
+
+On va donc créer une image Docker custom qui :
+
+part de postgres:15 (pour avoir pg_dump)
+
+installe awscli (pour l’upload S3)
+
+optionnellement installe bash et tzdata pour confort et gestion de date
+
+sera poussée sur ton registre d’images (DockerHub, GitLab, ECR…)
+
+1️⃣ Dockerfile optimisé
+dockerfile
+Copier
+Modifier
+FROM postgres:15
+
+# Installer awscli, bash, tzdata
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       awscli bash tzdata \
+    && rm -rf /var/lib/apt/lists/*
+
+# Définir timezone par défaut (optionnel)
+ENV TZ=Europe/Paris
+
+# Script de backup (sera lancé par le CronJob)
+COPY backup.sh /usr/local/bin/backup.sh
+RUN chmod +x /usr/local/bin/backup.sh
+
+ENTRYPOINT ["/usr/local/bin/backup.sh"]
+2️⃣ Script backup.sh
+bash
+Copier
+Modifier
+#!/bin/bash
+set -e
+
+# Variables nécessaires
+: "${PGHOST:?Variable manquante}"
+: "${PGUSER:?Variable manquante}"
+: "${PGPASSWORD:?Variable manquante}"
+: "${PGDATABASE:?Variable manquante}"
+: "${AWS_ACCESS_KEY_ID:?Variable manquante}"
+: "${AWS_SECRET_ACCESS_KEY:?Variable manquante}"
+: "${AWS_DEFAULT_REGION:?Variable manquante}"
+: "${BUCKET_NAME:?Variable manquante}"
+
+TIMESTAMP=$(date +"%Y-%m-%d_%H-%M")
+FILE_NAME="netbox_backup_${TIMESTAMP}.dump.gz"
+
+echo "📦 Dump de la base $PGDATABASE..."
+pg_dump -Fc "$PGDATABASE" | gzip > /tmp/$FILE_NAME
+
+echo "☁️ Upload vers S3..."
+aws s3 cp /tmp/$FILE_NAME s3://$BUCKET_NAME/$FILE_NAME
+
+echo "🧹 Suppression des backups de plus de 7 jours..."
+aws s3 ls s3://$BUCKET_NAME/ | awk '{print $4}' | \
+  grep '^netbox_backup_' | \
+  while read f; do
+    FILE_DATE=$(echo $f | sed 's/netbox_backup_//' | sed 's/.dump.gz//')
+    FILE_TS=$(date -d ${FILE_DATE//_/ } +%s)
+    SEVEN_DAYS_AGO=$(date -d '7 days ago' +%s)
+    if [ "$FILE_TS" -lt "$SEVEN_DAYS_AGO" ]; then
+      echo "🗑 Suppression $f"
+      aws s3 rm s3://$BUCKET_NAME/$f
+    fi
+  done
+
+echo "✅ Backup terminé avec succès."
+3️⃣ CronJob utilisant cette image
+yaml
+Copier
+Modifier
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: netbox-backup-s3
+spec:
+  schedule: "0 0 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: netbox-backup
+            image: ton-registre/netbox-backup:latest
+            env:
+              - name: PGHOST
+                valueFrom:
+                  secretKeyRef:
+                    name: netbox-db-secret
+                    key: host
+              - name: PGUSER
+                valueFrom:
+                  secretKeyRef:
+                    name: netbox-db-secret
+                    key: username
+              - name: PGPASSWORD
+                valueFrom:
+                  secretKeyRef:
+                    name: netbox-db-secret
+                    key: password
+              - name: PGDATABASE
+                valueFrom:
+                  secretKeyRef:
+                    name: netbox-db-secret
+                    key: database
+              - name: AWS_ACCESS_KEY_ID
+                valueFrom:
+                  secretKeyRef:
+                    name: aws-s3-secret
+                    key: aws_access_key_id
+              - name: AWS_SECRET_ACCESS_KEY
+                valueFrom:
+                  secretKeyRef:
+                    name: aws-s3-secret
+                    key: aws_secret_access_key
+              - name: AWS_DEFAULT_REGION
+                valueFrom:
+                  secretKeyRef:
+                    name: aws-s3-secret
+                    key: aws_region
+              - name: BUCKET_NAME
+                valueFrom:
+                  secretKeyRef:
+                    name: aws-s3-secret
+                    key: bucket_name
+4️⃣ Avantages de cette version
+✅ Plus rapide (pas d’installation awscli à chaque exécution)
+✅ Plus propre (tout est versionné et testé dans l’image)
+✅ Facile à mettre à jour (juste rebuild/push l’image)
+✅ Compatible avec rotation S3 intégrée
+
+Si tu veux, je peux aussi te faire une version sans clés AWS en utilisant un ServiceAccount Kubernetes avec IAM Role pour éviter de stocker les credentials S3 dans un Secret.
+Ça serait plus sécurisé, surtout en prod AWS.
+
+
+📌 Dernière astuce : si tu veux tester avant la mise en prod, tu peux lancer un job unique manuellement pour vérifier que le dump arrive bien sur S3 :
+
+bash
+Copier
+Modifier
+kubectl create job --from=cronjob/netbox-backup-s3 test-backup
+Puis vérifier :
+
+aws s3 ls s3://mon-bucket-backup-netbox/
+supprimer le job test après :
+
+kubectl delete job test-backup
+            
+Tu veux que je te prépare aussi une version qui chiffre automatiquement les backups avec AES ou GPG avant de les envoyer sur S3, pour plus de sécurité ?
