@@ -1,0 +1,241 @@
+1️⃣ What the GitHub examples actually teach us
+The e‑breuninger fork uses the following provider arguments (the examples are written against the latest release – > 1.13.0):
+
+Provider argument	What it is	Example from examples/README.md
+server_url	NetBox base URL	server_url = "https://netbox.example.com"
+api_token	Bearer token	api_token = "xxxx"
+allow_insecure_https	Skip TLS validation	allow_insecure_https = true
+The data‑source netbox_prefix accepts:
+
+aggregate_id   (numeric)
+prefix_length  (numeric)
+tag_ids        (list(string))
+The resource netbox_prefix can then be used to allocate a prefix:
+
+resource "netbox_prefix" "example" {
+  prefix      = data.netbox_prefix.available.prefix
+  description = "…"
+  tag_ids     = var.tag_ids
+}
+So, in short:
+
+Root – declare the provider with the e‑breuninger source and the three connection arguments.
+Module – declare no provider block; it will inherit the provider instance passed from the root.
+Module – use the netbox_prefix data‑source with aggregate_id, prefix_length, tag_ids; then use a netbox_prefix resource to allocate the prefix.
+Below are the exact code snippets you can copy‑paste into your repository.
+
+2️⃣ Updated root – main.tf
+terraform {
+  required_version = ">= 1.3"
+
+  # ---- Same provider source that the examples use ----
+  required_providers {
+    netbox = {
+      source  = "e-breuninger/netbox"
+      version = ">= 1.16.0"      # keep it new‑enough
+    }
+  }
+}
+
+# ----------------- Provider configuration -----------------
+provider "netbox" {
+  alias = "prod"
+
+  server_url             = var.netbox_prod_url
+  api_token              = var.netbox_prod_token
+  allow_insecure_https  = true
+}
+
+provider "netbox" {
+  alias = "staging"
+
+  server_url             = var.netbox_staging_url
+  api_token              = var.netbox_staging_token
+  allow_insecure_https  = true
+}
+
+# ----------------- Variables -----------------
+variable "netbox_prod_url"        { type = string }
+variable "netbox_prod_token"      { type = string, sensitive = true }
+variable "netbox_staging_url"    { type = string }
+variable "netbox_staging_token"  { type = string, sensitive = true }
+
+# ----------------- Example reservations -----------------
+locals {
+  reservations = [
+    {
+      name          = "private_rfc1918"
+      aggregate_id  = 10      # /8 aggregate
+      prefix_length = 24
+      tag_ids       = []
+      env           = "prod"
+    },
+    {
+      name          = "public_bgp"
+      aggregate_id  = 20      # /24 aggregate
+      prefix_length = 24
+      tag_ids       = ["bgp"]
+      env           = "staging"
+    }
+  ]
+}
+
+# ----------------- Module – prod -----------------
+module "prefix_alloc_prod" {
+  for_each = { for r in local.reservations : r.name => r if r.env == "prod" }
+
+  source        = "./modules/prefix_alloc"
+  aggregate_id  = each.value.aggregate_id
+  prefix_length = each.value.prefix_length
+  tag_ids       = each.value.tag_ids
+  description   = "Allocated by Terraform (${each.key})"
+  role          = null
+  status        = "active"
+
+  providers = { netbox = netbox.prod }   # pass the alias instance
+}
+
+# ----------------- Module – staging -----------------
+module "prefix_alloc_staging" {
+  for_each = { for r in local.reservations : r.name => r if r.env == "staging" }
+
+  source        = "./modules/prefix_alloc"
+  aggregate_id  = each.value.aggregate_id
+  prefix_length = each.value.prefix_length
+  tag_ids       = each.value.tag_ids
+  description   = "Allocated by Terraform (${each.key})"
+  role          = null
+  status        = "active"
+
+  providers = { netbox = netbox.staging }
+}
+What changed from your earlier attempt?
+
+url, token, skip_tls_verify → server_url, api_token, allow_insecure_https.
+The provider is now explicitly the forked source (e-breuninger/netbox).
+The provider version is bumped to ≥ 1.16.0 so that the aggregate_id / prefix_length arguments are part of the data‑source schema.
+3️⃣ Updated module – modules/prefix_alloc/
+3.1 versions.tf
+Keep only the provider source declaration – no provider block at all. This guarantees that every consumer of the module pulls the correct fork.
+
+# modules/prefix_alloc/versions.tf
+terraform {
+  required_providers {
+    netbox = {
+      source  = "e-breuninger/netbox"
+      version = ">= 1.16.0"
+    }
+  }
+}
+3.2 variables.tf
+variable "aggregate_id" {
+  description = "Numeric ID of the NetBox aggregate to search within."
+  type        = number
+}
+
+variable "prefix_length" {
+  description = "Desired length of the prefix to allocate."
+  type        = number
+}
+
+variable "tag_ids" {
+  description = "Tag IDs that the allocated prefix must contain."
+  type        = list(string)
+  default     = []
+}
+
+variable "description" { type = string }
+variable "role"       { type = number, default = null }
+variable "status"     { type = string, default = "active" }
+Why no provider block?
+The module inherits the provider instance the root passes in via providers = { netbox = netbox.prod }. If you put a provider block here, Terraform would try to use it again (and could end up pulling a different version).
+
+3.3 main.tf
+# modules/prefix_alloc/main.tf
+
+# ---- 1️⃣  Get an available prefix ----
+data "netbox_prefix" "available" {
+  aggregate_id   = var.aggregate_id
+  prefix_length  = var.prefix_length
+  tag_ids        = var.tag_ids
+}
+
+# ---- 2️⃣  Allocate that prefix ----
+resource "netbox_prefix" "allocated" {
+  prefix      = data.netbox_prefix.available.prefix   # e.g. "10.0.0.0/24"
+  description = var.description
+  role        = var.role
+  status      = var.status
+  tag_ids     = var.tag_ids
+}
+The data‑source returns a free prefix that matches your filter; the resource takes that prefix and creates it in NetBox, thereby “allocating” it for you.
+
+3.4 outputs.tf (optional)
+output "allocated_prefixes" {
+  value = {
+    for k, v in var.aggregate_id : k => {
+      prefix      = v.prefix
+      description = v.description
+    }
+  }
+}
+3️⃣ What to do next
+Remove any provider block you may have accidentally left in modules/prefix_alloc/.
+Only versions.tf should exist there.
+
+Run a clean init (so Terraform pulls the new provider):
+
+rm -rf .terraform .terraform/modules
+terraform init -upgrade -reconfigure
+Verify the schema (just to be safe):
+
+terraform providers schema -no-color | grep -A5 'data "netbox_prefix"'
+You should see the arguments aggregate_id, prefix_length, tag_ids, etc. If any of those are missing, you’re still on a too old release – bump the version constraint in versions.tf.
+
+Run the plan again:
+
+terraform plan
+It should now finish without “unsupported argument” errors.
+
+4️⃣ One‑liner for the whole repo
+git rm -r .terraform .terraform/modules          # clean slate
+cat > modules/prefix_alloc/versions.tf <<'EOF'
+terraform {
+  required_providers {
+    netbox = {
+      source  = "e-breuninger/netbox"
+      version = ">= 1.16.0"
+    }
+  }
+}
+EOF
+
+cat > modules/prefix_alloc/variables.tf <<'EOF'
+variable "aggregate_id" { type = number }
+variable "prefix_length" { type = number }
+variable "tag_ids" { type = list(string), default = [] }
+variable "description" { type = string }
+variable "role" { type = number, default = null }
+variable "status" { type = string, default = "active" }
+EOF
+
+cat > modules/prefix_alloc/main.tf <<'EOF'
+data "netbox_prefix" "available" {
+  aggregate_id  = var.aggregate_id
+  prefix_length = var.prefix_length
+  tag_ids       = var.tag_ids
+}
+
+resource "netbox_prefix" "allocated" {
+  prefix      = data.netbox_prefix.available.prefix
+  description = var.description
+  role        = var.role
+  status      = var.status
+  tag_ids     = var.tag_ids
+}
+EOF
+With the root configured as shown in section 2, everything should plan‑out cleanly. Happy Terraforming!
+
+Downloading model
+0 B / 0 B (0%)
+Send a message
