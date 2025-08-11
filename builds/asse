@@ -1,24 +1,17 @@
-Below is a minimal, but complete set of files that will compile without the “different source” error.
-Everything is hard‑coded for clarity – you can still wire‑up variables or locals to pull the URLs / tokens from Vault, env‑vars, etc. – the important part is that every place that declares a netbox provider uses the same source (e-breuninger/netbox).
-
-1️⃣ Root module – main.tf
+3️⃣ Full, working files
+Root – main.tf
 terraform {
   required_version = ">= 1.3"
 
-  # ---------------------------------------------------------------
-  #  The **same** provider that the module uses
-  # ---------------------------------------------------------------
   required_providers {
     netbox = {
       source  = "e-breuninger/netbox"
-      version = ">= 1.12.2"          # whatever version you need
+      version = ">= 1.12.2"
     }
   }
 }
 
-# ---------------------------------------------------------------
-#  Provider declarations (two aliases – prod & staging)
-# ---------------------------------------------------------------
+# Provider blocks – two aliases
 provider "netbox" {
   alias          = "prod"
   url            = var.netbox_prod_url
@@ -33,39 +26,20 @@ provider "netbox" {
   skip_tls_verify = true
 }
 
-# ---------------------------------------------------------------
-#  Variables – keep them *sensitive* when you use them in CI/CD
-# ---------------------------------------------------------------
+# Variables
 variable "netbox_prod_url"        { type = string }
 variable "netbox_prod_token"      { type = string, sensitive = true }
 variable "netbox_staging_url"    { type = string }
 variable "netbox_staging_token"  { type = string, sensitive = true }
 
-# ---------------------------------------------------------------
-#  Example list of reservations (one per environment)
-# ---------------------------------------------------------------
+# Example reservations (replace with your own source)
 locals {
   reservations = [
-    {
-      name          = "private_rfc1918"
-      aggregate_id  = 10          # e.g. /8 aggregate
-      prefix_length = 24
-      tag_ids       = []
-      env          = "prod"
-    },
-    {
-      name          = "public_bgp"
-      aggregate_id  = 20          # e.g. /24 aggregate
-      prefix_length = 24
-      tag_ids       = ["bgp"]
-      env          = "staging"
-    }
+    { name = "private_rfc1918", aggregate_id = 10, prefix_length = 24, tag_ids = [], env = "prod" },
+    { name = "public_bgp",     aggregate_id = 20, prefix_length = 24, tag_ids = ["bgp"], env = "staging" }
   ]
 }
 
-# ---------------------------------------------------------------
-#  Module – prod
-# ---------------------------------------------------------------
 module "prefix_alloc_prod" {
   for_each = { for r in local.reservations : r.name => r if r.env == "prod" }
 
@@ -77,15 +51,9 @@ module "prefix_alloc_prod" {
   role          = null
   status        = "active"
 
-  # Attach the **prod** provider instance
-  providers = {
-    netbox = netbox.prod
-  }
+  providers = { netbox = netbox.prod }
 }
 
-# ---------------------------------------------------------------
-#  Module – staging
-# ---------------------------------------------------------------
 module "prefix_alloc_staging" {
   for_each = { for r in local.reservations : r.name => r if r.env == "staging" }
 
@@ -97,33 +65,16 @@ module "prefix_alloc_staging" {
   role          = null
   status        = "active"
 
-  # Attach the **staging** provider instance
-  providers = {
-    netbox = netbox.staging
-  }
+  providers = { netbox = netbox.staging }
 }
 
-# ---------------------------------------------------------------
-#  Simple outputs
-# ---------------------------------------------------------------
 output "allocated_prefixes" {
   value = {
     for m in concat(values(module.prefix_alloc_prod), values(module.prefix_alloc_staging)) :
     m.key => m.value.allocated_prefix
   }
 }
-
-output "allocated_prefix_ids" {
-  value = {
-    for m in concat(values(module.prefix_alloc_prod), values(module.prefix_alloc_staging)) :
-    m.key => m.value.allocated_prefix_id
-  }
-}
-Why two separate module blocks?
-Each block receives a literal provider address (netbox.prod or netbox.staging). Terraform can parse that during configuration, so the error disappears.
-
-2️⃣ Module – modules/prefix_alloc
-2‑1. versions.tf (or provider.tf – the provider source that the module must use)
+Module – modules/prefix_alloc/versions.tf
 terraform {
   required_providers {
     netbox = {
@@ -132,86 +83,38 @@ terraform {
     }
   }
 }
-Important:
-If you also want to be able to set URL / token inside the module, you may keep a provider block in this file, but make sure it has the same source (e-breuninger/netbox). For the example below we let the root module supply all of that – so we don’t include a provider block at all.
-
-2‑2. variables.tf
-variable "aggregate_id" {
-  description = "ID of the aggregate inside NetBox (e.g. the /8 or /24 aggregate ID)"
-  type        = number
-}
-
-variable "prefix_length" {
-  description = "Desired /length for the prefix you want to allocate"
-  type        = number
-}
-
-variable "tag_ids" {
-  description = "List of tag IDs that must be present on the allocated prefix"
-  type        = list(string)
-  default     = []
-}
-
-variable "description" {
-  description = "Free‑form description that will be stored in NetBox"
-  type        = string
-}
-
-variable "role" {
-  description = "Optional NetBox role (numeric ID)"
-  type        = number
-  default     = null
-}
-
-variable "status" {
-  description = "Optional NetBox status (string, e.g. 'active', 'inactive')"
-  type        = string
-  default     = "active"
-}
-2‑3. main.tf – data + resource
-# ---------------------------------------------------------------
-#  1. Grab a free prefix inside the chosen aggregate
-# ---------------------------------------------------------------
+Module – modules/prefix_alloc/variables.tf
+variable "aggregate_id"   { type = number }
+variable "prefix_length"  { type = number }
+variable "tag_ids"        { type = list(string), default = [] }
+variable "description"    { type = string }
+variable "role"           { type = number, default = null }
+variable "status"         { type = string, default = "active" }
+Module – modules/prefix_alloc/main.tf
+# 1. Get a free prefix
 data "netbox_prefix" "available" {
   aggregate_id  = var.aggregate_id
   prefix_length = var.prefix_length
   tag_ids       = var.tag_ids
 }
 
-# ---------------------------------------------------------------
-#  2. Allocate the prefix
-# ---------------------------------------------------------------
+# 2. Allocate the prefix
 resource "netbox_prefix" "allocated" {
-  # **No provider block here – the instance is injected from the root**
-  # provider = netbox.prod  <-- NOT used, root does it
-
-  prefix = data.netbox_prefix.available.prefix
+  prefix     = data.netbox_prefix.available.prefix
   description = var.description
-  role = var.role
-  status = var.status
-  tag_ids = var.tag_ids
+  role       = var.role
+  status     = var.status
+  tag_ids    = var.tag_ids
 }
-Why provider = … isn’t needed – Terraform automatically inherits the provider from the root module when the module declares no provider block. That keeps the module reusable.
+Module – modules/prefix_alloc/outputs.tf
+output "allocated_prefix"    { value = netbox_prefix.allocated.prefix }
+output "allocated_prefix_id" { value = netbox_prefix.allocated.id }
+4️⃣ Verify
+terraform init -upgrade
+terraform providers   # should show only e‑breuninger/netbox
+terraform plan
+You should no longer see the “unsupported argument” errors.
+If you still do, double‑check that terraform init downloaded the e-breuninger/netbox provider (terraform providers shows its source). If not, delete the .terraform directory and run terraform init again.
 
-2‑4. outputs.tf
-output "allocated_prefix" {
-  description = "The /prefix that was allocated"
-  value       = netbox_prefix.allocated.prefix
-}
-
-output "allocated_prefix_id" {
-  description = "NetBox ID of the allocated prefix"
-  value       = netbox_prefix.allocated.id
-}
-3️⃣ Result
-$ terraform init -upgrade
-$ terraform plan
-You should see a plan that looks something like:
-
-Plan: 2 to add, 0 to change, 0 to destroy.
-
-─────────────────────────────────────────────────────────────────────────────────────────────────────────────
-No longer any “hashicorp/netbox” vs. “e‑breuninger/netbox” errors.
-If you prefer a single module "prefix_alloc" block, just drop the if r.env == … filter and keep a single providers map that always passes a literal address (netbox.prod or netbox.staging).
-
-Feel free to replace the hard‑coded reservation list with whatever dynamic source you want – the key point is that the provider source is identical everywhere.
+Downloading model
+0 B / 0 B (0%)
