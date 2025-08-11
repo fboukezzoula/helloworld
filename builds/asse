@@ -116,5 +116,138 @@ terraform plan
 You should no longer see the “unsupported argument” errors.
 If you still do, double‑check that terraform init downloaded the e-breuninger/netbox provider (terraform providers shows its source). If not, delete the .terraform directory and run terraform init again.
 
+
+
+
+
+
+
+
+Thought for 27.9 seconds
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Bottom line – the *arguments are still being applied to the official NetBox provider (hashicorp/netbox), which does not expose url, token or skip_tls_verify.
+Even though terraform providers reports that the source is e‑breuninger/netbox, somewhere in the module tree a provider declaration without a source is causing Terraform to fall back to the default provider.
+
+Below is a systematic way to locate and fix that stray declaration and to make sure you are actually using the forked provider.
+
+1. Confirm the provider that the root really pulls in
+terraform providers
+You should see only one provider that starts with
+
+provider[registry.terraform.io/e-breuninger/netbox]
+If that is true, the root is correct.
+
+2. Find the “wrong” provider block
+Terraform reports the error inside a provider block, so the block that contains the unsupported arguments must exist somewhere in the module tree (root or any nested module).
+Search the entire repository for:
+
+grep -R '^provider *"netbox"' -n .
+You should look for any line that starts with provider "netbox" { and that does not contain an alias or a source.
+
+Typical culprits:
+
+Where it can live	What it looks like	Why it fails
+In the root (outside of alias blocks)	provider "netbox" { url = … }	Picks the default provider (hashicorp/netbox).
+Inside the prefix_alloc module (or any nested module)	provider "netbox" { url = … }	Same issue.
+In another module you are calling (e.g. module "xyz" that also uses NetBox)	same pattern	Same issue.
+Remove all such blocks – the only place you should declare a provider is in the root (with required_providers) and in the module you may optionally put a versions.tf that only declares the provider source (see step 4).
+
+3. Ensure the module inherits the provider correctly
+Your prefix_alloc module must NOT contain a provider block at all. If it does, delete it entirely. The module will automatically use the instance that the root passes in via the providers = { … } mapping.
+
+Add a versions.tf (or provider.tf) inside the module that only specifies the same source:
+
+# modules/prefix_alloc/versions.tf
+terraform {
+  required_providers {
+    netbox = {
+      source  = "e-breuninger/netbox"
+      version = ">= 1.12.2"   # pick the newest stable that supports the args
+    }
+  }
+}
+4. Re‑initialize cleanly
+Clear the module cache so Terraform cannot fall back to a previously downloaded copy that used the wrong provider:
+
+rm -rf .terraform .terraform/modules
+terraform init -upgrade -reconfigure
+-reconfigure forces Terraform to re‑evaluate the provider configuration even if it thinks nothing changed.
+
+After init, run:
+
+terraform providers
+You should now see only the e-breuninger/netbox entry.
+
+5. Verify that the arguments are supported
+Run the schema command to inspect the arguments that the provider currently exposes:
+
+terraform providers schema -no-color | grep -A3 -n 'netbox'
+You should see something like:
+
+  provider "netbox" {
+    description = "NetBox provider"
+    arguments = {
+      url             = string
+      token           = string
+      skip_tls_verify = bool
+    }
+  }
+If url, token, or skip_tls_verify are missing, you are using a provider version that does not expose them. Upgrade to a newer version:
+
+terraform {
+  required_providers {
+    netbox = {
+      source  = "e-breuninger/netbox"
+      version = "~> 1.15.0"   # adjust to the latest stable
+    }
+  }
+}
+Then run terraform init -upgrade -reconfigure again.
+
+6. Run the plan
+terraform plan
+You should no longer see “unsupported argument” errors; the url, token, and skip_tls_verify arguments will be accepted.
+
+TL;DR checklist
+grep -R '^provider *"netbox"' -n . → delete every block without alias or source.
+Keep only the root required_providers block that points to e-breuninger/netbox.
+Add a versions.tf inside the module that declares the same provider source.
+rm -rf .terraform .terraform/modules && terraform init -upgrade -reconfigure.
+Verify with terraform providers and terraform providers schema.
+Run terraform plan again.
+Once step 4 succeeds and the schema shows the arguments, the plan will pass. If you still get the same error, paste the exact terraform providers schema output and the offending provider block snippet, and we’ll dig further.
+
 Downloading model
 0 B / 0 B (0%)
+
