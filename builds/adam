@@ -236,6 +236,91 @@ resource "netbox_prefix" "allocated" {
 EOF
 With the root configured as shown in section 2, everything should plan‑out cleanly. Happy Terraforming!
 
-Downloading model
-0 B / 0 B (0%)
-Send a message
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+1️⃣ What the error is telling you
+output "allocated_prefixes" {
+  for k, v in var_aggregate_id : k => { … }
+}
+var.aggregate_id is declared as number in the module.
+A for‑k, v in … expression expects the right‑hand side to be a collection (list, map, set, etc.).
+A plain number is not a collection → the error.
+So the module does not need a for expression at all; it just has to return the data it has already created.
+
+2️⃣ The correct outputs.tf for modules/prefix_alloc/
+# modules/prefix_alloc/outputs.tf
+
+# The prefix string that we just allocated in NetBox
+output "allocated_prefix" {
+  description = "The allocated prefix string (e.g. 10.0.0.0/24)"
+  value       = netbox_prefix.allocated.prefix
+}
+
+# (Optional) The NetBox‑internal ID of that prefix
+output "allocated_prefix_id" {
+  description = "The NetBox ID of the allocated prefix"
+  value       = netbox_prefix.allocated.id
+}
+
+# If you want to expose other attributes, just add more outputs here.
+# e.g.
+# output "allocated_description" { value = netbox_prefix.allocated.description }
+Why this works
+
+The module creates one netbox_prefix.allocated resource per module instance.
+That resource has a single prefix attribute – no collection involved.
+An output that simply references that attribute is all you need.
+3️⃣ Keep the aggregation logic in the root (where it already
+exists)
+
+You’re already calling the module via for_each in the root, so each module instance returns a single prefix. Your root‑level output can still be the same – it stitches all module outputs together into one map:
+
+# root/main.tf – unchanged (kept for reference)
+
+output "allocated_prefixes" {
+  description = "All prefixes that were allocated, keyed by the reservation name"
+  value = {
+    for m in concat(values(module.prefix_alloc_prod), values(module.prefix_alloc_staging)) :
+      m.key => m.value.allocated_prefix
+  }
+}
+m.key is the key you gave each module instance in the root (each.value.name – the reservation name).
+m.value.allocated_prefix is the output we just defined in the module.
+4️⃣ Quick sanity‑check after the change
+# 1️⃣  Clean Terraform state & init (just in case you’re still on an old
+#     provider version)
+rm -rf .terraform .terraform/modules
+terraform init -upgrade -reconfigure
+
+# 2️⃣  Verify the outputs in the module
+terraform output -module=prefix_alloc
+# Should show "allocated_prefix" and "allocated_prefix_id"
+
+# 3️⃣  Run a plan
+terraform plan
+If everything compiles, the plan will finish without the “for expression” error.
+
+Bottom‑Line
+Remove the for k, v in var_aggregate_id … line.
+Replace it with the two simple outputs shown above.
+Keep the aggregation logic in the root – that’s the place where you have a collection (module.prefix_alloc_prod, etc.) to iterate over.
+That’s all you need to get past the “number can’t be used as a collection” error. Happy Terraforming!
