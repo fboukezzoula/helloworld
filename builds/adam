@@ -324,3 +324,146 @@ Remove the for k, v in var_aggregate_id … line.
 Replace it with the two simple outputs shown above.
 Keep the aggregation logic in the root – that’s the place where you have a collection (module.prefix_alloc_prod, etc.) to iterate over.
 That’s all you need to get past the “number can’t be used as a collection” error. Happy Terraforming!
+
+
+
+
+
+
+Why the example on the GitHub repo is still “Unsupported argument”
+The file you linked
+
+https://github.com/e-breuninger/terraform-provider-netbox/blob/master/examples/resources/netbox_available_prefix/resource.tf
+is only an example for the stand‑alone provider – it doesn’t belong to any module.
+If you copy that code into a module and then call the module, you have to make sure that
+
+You are using the same provider version that the example was written for
+(aggregate_id was added in v1.13.0 and is still present in 1.16.0+).
+You pass the right provider instance to the module (the example uses the default provider, but your root uses aliased providers).
+Below is a minimal, copy‑paste‑ready setup that follows the example exactly, keeps the provider source to the forked one, and shows how to call the module from the root. After you run these steps the plan should succeed.
+
+1️⃣ Provider: Use the forked source and a recent version
+# root/main.tf
+terraform {
+  required_version = ">= 1.3"
+  required_providers {
+    netbox = {
+      source  = "e-breuninger/netbox"
+      version = ">= 1.16.0"     # any 1.13.0+ will work, 1.16.0 is the latest
+    }
+  }
+}
+
+# The two NetBox instances you want to talk to
+provider "netbox" {
+  server_url   = var.netbox_prod_url
+  token        = var.netbox_prod_token
+  allow_insecure = true          # example uses this flag
+}
+Why allow_insecure?
+The example provider code still uses the legacy allow_insecure flag – the newer fork exposes allow_insecure_https. Either flag works in the fork, but keep the one you used when you copied the example.
+
+2️⃣ Example of the resource block from the repo
+The file you linked contains:
+
+data "netbox_prefix" "available" {
+  aggregate_id  = var.aggregate_id
+  prefix_length = var.prefix_length
+  tag_ids       = var.tag_ids
+}
+aggregate_id is a numeric aggregate ID – you must provide that as a number.
+If you give it a string or map, Terraform will complain.
+
+3️⃣ Create a tiny module that mirrors the example
+3.1 modules/prefix_alloc/versions.tf
+# modules/prefix_alloc/versions.tf
+terraform {
+  required_providers {
+    netbox = {
+      source  = "e-breuninger/netbox"
+      version = ">= 1.16.0"
+    }
+  }
+}
+3.2 modules/prefix_alloc/variables.tf
+variable "aggregate_id"   { type = number }
+variable "prefix_length"  { type = number }
+variable "tag_ids"        { type = list(string), default = [] }
+variable "description"    { type = string, default = "" }
+3.3 modules/prefix_alloc/main.tf
+data "netbox_prefix" "available" {
+  aggregate_id  = var.aggregate_id
+  prefix_length = var.prefix_length
+  tag_ids       = var.tag_ids
+}
+
+resource "netbox_prefix" "allocated" {
+  prefix      = data.netbox_prefix.available.prefix
+  description = var.description
+  role        = null
+  status      = "active"
+  tag_ids     = var.tag_ids
+}
+3.4 modules/prefix_alloc/outputs.tf
+output "allocated_prefix" {
+  value = netbox_prefix.allocated.prefix
+}
+4️⃣ Root configuration that uses the module
+module "available_prefix" {
+  source        = "./modules/prefix_alloc"
+
+  aggregate_id  = 10      # replace with your aggregate’s numeric ID
+  prefix_length = 24
+  tag_ids       = ["foo", "bar"]
+  description   = "Allocated from example"
+}
+
+output "result" {
+  value = module.available_prefix.allocated_prefix
+}
+Important – no provider "netbox" {} block inside the module.
+The module inherits the provider instance from the root (default provider, so no alias is required).
+
+5️⃣ Run it
+# 1. Clean previous cache
+rm -rf .terraform .terraform/modules
+
+# 2. Initialise
+terraform init -upgrade
+
+# 3. Validate the provider is the forked one
+terraform providers
+# Should show: provider[registry.terraform.io/e-breuninger/netbox]
+
+# 4. Plan / apply
+terraform plan
+terraform apply
+If you still see
+
+Error: Unsupported argument
+aggregate_id = var.aggregate_id
+then Terraform is still pulling the official hashicorp/netbox provider. Double‑check that no other module in the repo contains a spurious provider "netbox" {} block that omits source.
+Search the tree:
+
+grep -R "provider \"netbox\"" -n .
+If you find one, delete it or add the source attribute to it.
+
+6️⃣ Quick sanity‑check
+# Inspect the schema of the data source
+terraform providers schema -no-color | grep -A6 'data "netbox_prefix"'
+You should see:
+
+aggregate_id      (number)
+prefix_length     (number)
+tag_ids           (list(string))
+If any of those are missing, you’re still on a too‑old provider (hashicorp/netbox). Upgrade again and re‑init.
+
+Bottom‑Line
+Use the forked source (e-breuninger/netbox) with a version ≥ 1.13.0.
+Make sure the module has no default provider block that could override the root.
+Use the exact example code – it works with Terraform 1.3+ and the forked provider.
+Apply the above changes and the example will run. If you hit a specific error again, paste the exact error text and the part of your configuration that produced it – that’s what I’ll need to dig deeper. Happy hacking!
+
+Downloading model
+0 B / 0 B (0%)
+Send a message
