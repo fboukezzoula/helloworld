@@ -1,0 +1,31 @@
+Pour installer uniquement le client psql (sans PostgreSQL serveur) sur Red Hat Enterprise Linux 9 (RHEL 9), tu peux utiliser le paquet fourni par la communauté PostgreSQL. Voici la procédure :
+
+1. Activer le dépôt officiel PostgreSQL
+
+Red Hat ne fournit pas directement psql seul dans AppStream. Il faut activer le dépôt communautaire de PostgreSQL Global Development Group (PGDG) :
+
+sudo dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-$(uname -m)/pgdg-redhat-repo-latest.noarch.rpm
+
+2. Désactiver éventuellement le module PostgreSQL de RHEL
+
+Red Hat fournit un module PostgreSQL, mais il peut entrer en conflit. On le désactive :
+
+sudo dnf -qy module disable postgresql
+
+3. Installer uniquement le client psql
+
+Le client est dans le paquet postgresqlXX (où XX est la version, par exemple 15 ou 16).
+Par exemple, pour PostgreSQL 16 :
+
+sudo dnf install -y postgresql16
+
+
+Cela installe juste le client (psql, pg_dump, etc.) sans le serveur.
+
+4. Vérifier
+psql --version
+
+
+Tu devrais voir quelque chose comme :
+
+psql (PostgreSQL) 16.x
