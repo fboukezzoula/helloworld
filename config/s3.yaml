@@ -104,4 +104,79 @@ ENTRYPOINT ["sleep", "infinity"]
 
 
 
+
+
+
+On va donc compléter ton Pod pour que ton container app monte directement le WebDAV exposé par le sidecar rclone sur un répertoire /data.
+Ainsi ton app voit /data comme un disque normal, et tout est stocké dans S3.
+
+🚀 Exemple Kubernetes Pod avec WebDAV monté dans /data
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-with-s3-mount
+spec:
+  containers:
+    # --- Sidecar rclone (expose S3 en WebDAV) ---
+    - name: rclone
+      image: rclone/rclone:latest
+      args:
+        - serve
+        - webdav
+        - --addr=:8080
+        - s3:my-bucket
+      env:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: s3-credentials
+              key: accessKey
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: s3-credentials
+              key: secretKey
+      ports:
+        - containerPort: 8080
+
+    # --- Application avec montage WebDAV ---
+    - name: app
+      image: registry.access.redhat.com/ubi9/ubi:9.3
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      command:
+        - sh
+        - -c
+        - |
+          dnf install -y davfs2 && \
+          mkdir -p /data && \
+          mount -t davfs http://localhost:8080/ /data -o uid=1000,gid=1000,username=,password= && \
+          echo "Bucket S3 monté sur /data" && \
+          sleep infinity
+
+🔑 Points clés
+
+davfs2 permet de monter un serveur WebDAV comme un FS.
+
+On monte http://localhost:8080/ (le sidecar rclone) dans /data.
+
+L’option uid=1000,gid=1000 garantit que ton user applicatif (app) est propriétaire des fichiers.
+
+Pas besoin de root permanent : seul le mount initial est root, mais comme c’est fait dans command, après c’est transparent.
+
+⚠️ Attention
+
+Certains clusters bloquent mount même sans /dev/fuse → à tester.
+
+davfs2 stocke parfois des fichiers de cache dans ~/.davfs2. Tu peux ignorer ça avec -o conf=/dev/null.
+
+Performances moindres qu’un FS local (chaque lecture/écriture passe par WebDAV → HTTP → S3).
+
+👉 Question : ton application a besoin de lire/écrire beaucoup de petits fichiers fréquemment, ou plutôt des fichiers de taille moyenne/grosse (images, documents, logs) ?
+Cela change beaucoup le choix optimal (WebDAV est bien pour fichiers moyens/gros, mais très mauvais pour plein de petits fichiers).
+
+
+
+
           
