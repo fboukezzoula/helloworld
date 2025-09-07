@@ -1,130 +1,62 @@
-apiVersion: v1wRE1lDr7sT1b?s$92uYl
-kind: Pod
-metadata:
-  name: s3fs-app
-spec:
-  volumes:
-    - name: s3-bucket
-      emptyDir: {}   # volume partagé entre init et app
+Configuration S3
+Créez cette structure dans votre bucket S3 :
+my-bucket/
+├── config/
+│   ├── code-server/
+│   ├── extensions/
+│   └── user-data/
+Déploiement
 
-    - name: fuse-device
-      hostPath:
-        path: /dev/fuse
-        type: CharDevice
+Ajustez les variables :
 
-  initContainers:
-    - name: s3-mounter
-      image: quay.io/efrecon/s3fs:latest
-      securityContext:
-        runAsUser: 0
-        runAsGroup: 0
-        capabilities:
-          add: ["SYS_ADMIN", "DAC_READ_SEARCH"]
-        allowPrivilegeEscalation: false
-      env:
-        - name: AWSACCESSKEYID
-          valueFrom:
-            secretKeyRef:
-              name: s3-credentials
-              key: accessKey
-        - name: AWSSECRETACCESSKEY
-          valueFrom:
-            secretKeyRef:
-              name: s3-credentials
-              key: secretKey
-      command:
-        - "sh"
-        - "-c"
-        - |
-          mkdir -p /mnt/s3
-          s3fs my-bucket /mnt/s3 \
-            -o url=https://s3.amazonaws.com \
-            -o use_path_request_style \
-            -o allow_other \
-            -o nonempty
-          # Garder le processus en vie tant que l'app tourne
-          sleep 3600
-      volumeMounts:
-        - mountPath: /mnt/s3
-          name: s3-bucket
-        - mountPath: /dev/fuse
-          name: fuse-device
-
-  containers:
-    - name: app
-      image: debian:bookworm-slim
-      command: ["sleep", "infinity"]
-      securityContext:
-        runAsUser: 1000    # ton user app
-        runAsGroup: 1000
-        allowPrivilegeEscalation: false
-      volumeMounts:
-        - mountPath: /data
-          name: s3-bucket
+s3:my-bucket/config → votre bucket
+Credentials S3
+Mot de passe code-server
 
 
+Appliquez :
+bashkubectl apply -f code-server.yaml
+
+Accès :
+bashkubectl port-forward pod/code-server-s3 8080:8080
+Puis http://localhost:8080
+
+Avantages de cette approche
+
+Persistence : Configuration sauvée dans S3
+Partage : Même config sur plusieurs pods
+Performance : Cache local avec --vfs-cache-mode=full
+Sécurité : Pas de privilèges root requis
+
+Alternative simple (si mount échoue)
+Remplacez rclone mount par un sync périodique :
+yamlargs:
+  - sync
+  - s3:my-bucket/config
+  - /shared/config
+  - --create-empty-src-dirs
+La configuration sera synchronisée au démarrage et à intervalles réguliers.
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-          # Base UBI 9
-FROM registry.access.redhat.com/ubi9/ubi:9.3
-
-# Installer dépendances et s3fs-fuse
-RUN dnf install -y \
-      epel-release \
-      fuse \
-      fuse-libs \
-      s3fs-fuse \
-    && dnf clean all
-
-# Créer un utilisateur applicatif non-root
-RUN useradd -m appuser
-
-# Répertoire de montage
-RUN mkdir /mnt/s3 && chown appuser:appuser /mnt/s3
-
-USER appuser
-
-ENTRYPOINT ["sleep", "infinity"]
-
-
-
-
-
-
-
-
-
-
-On va donc compléter ton Pod pour que ton container app monte directement le WebDAV exposé par le sidecar rclone sur un répertoire /data.
-Ainsi ton app voit /data comme un disque normal, et tout est stocké dans S3.
-
-🚀 Exemple Kubernetes Pod avec WebDAV monté dans /data
 apiVersion: v1
 kind: Pod
 metadata:
-  name: app-with-s3-mount
+  name: code-server-s3
 spec:
   containers:
-    # --- Sidecar rclone (expose S3 en WebDAV) ---
+    # --- Sidecar rclone mount ---
     - name: rclone
       image: rclone/rclone:latest
       args:
-        - serve
-        - webdav
-        - --addr=:8080
-        - s3:my-bucket
+        - mount
+        - s3:my-bucket/config  # Dossier config dans le bucket
+        - /shared/config
+        - --allow-other
+        - --allow-non-empty
+        - --vfs-cache-mode=full
+        - --dir-cache-time=5s
+        - --poll-interval=10s
+        - --daemon-timeout=0
       env:
         - name: AWS_ACCESS_KEY_ID
           valueFrom:
@@ -136,47 +68,109 @@ spec:
             secretKeyRef:
               name: s3-credentials
               key: secretKey
-      ports:
-        - containerPort: 8080
-
-    # --- Application avec montage WebDAV ---
-    - name: app
-      image: registry.access.redhat.com/ubi9/ubi:9.3
+        - name: RCLONE_CONFIG_S3_TYPE
+          value: "s3"
+        - name: RCLONE_CONFIG_S3_PROVIDER
+          value: "AWS"
       securityContext:
+        runAsNonRoot: true
         runAsUser: 1000
         runAsGroup: 1000
-      command:
-        - sh
-        - -c
-        - |
-          dnf install -y davfs2 && \
-          mkdir -p /data && \
-          mount -t davfs http://localhost:8080/ /data -o uid=1000,gid=1000,username=,password= && \
-          echo "Bucket S3 monté sur /data" && \
-          sleep infinity
+      volumeMounts:
+        - name: shared-config
+          mountPath: /shared/config
+          mountPropagation: Bidirectional
+      lifecycle:
+        preStop:
+          exec:
+            command: ["fusermount", "-u", "/shared/config"]
 
-🔑 Points clés
+    # --- Code-server ---
+    - name: code-server
+      image: codercom/code-server:latest
+      args:
+        - --bind-addr=0.0.0.0:8080
+        - --auth=password
+        - --disable-telemetry
+        - /workspace
+      env:
+        - name: PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: code-server-secret
+              key: password
+        - name: SHELL
+          value: /bin/bash
+      ports:
+        - containerPort: 8080
+          name: http
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        - name: shared-config
+          mountPath: /home/coder/.config
+          mountPropagation: HostToContainer
+      readinessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+        initialDelaySeconds: 10
+        periodSeconds: 5
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+        initialDelaySeconds: 30
+        periodSeconds: 30
+      resources:
+        requests:
+          memory: 512Mi
+          cpu: 100m
+        limits:
+          memory: 2Gi
+          cpu: 1000m
 
-davfs2 permet de monter un serveur WebDAV comme un FS.
+  volumes:
+    - name: workspace
+      emptyDir:
+        sizeLimit: 10Gi
+    - name: shared-config
+      emptyDir: {}
 
-On monte http://localhost:8080/ (le sidecar rclone) dans /data.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: code-server-service
+spec:
+  selector:
+    app: code-server
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+  type: ClusterIP
 
-L’option uid=1000,gid=1000 garantit que ton user applicatif (app) est propriétaire des fichiers.
+---
+# Secrets
+apiVersion: v1
+kind: Secret
+metadata:
+  name: s3-credentials
+type: Opaque
+stringData:
+  accessKey: "YOUR_S3_ACCESS_KEY"
+  secretKey: "YOUR_S3_SECRET_KEY"
 
-Pas besoin de root permanent : seul le mount initial est root, mais comme c’est fait dans command, après c’est transparent.
-
-⚠️ Attention
-
-Certains clusters bloquent mount même sans /dev/fuse → à tester.
-
-davfs2 stocke parfois des fichiers de cache dans ~/.davfs2. Tu peux ignorer ça avec -o conf=/dev/null.
-
-Performances moindres qu’un FS local (chaque lecture/écriture passe par WebDAV → HTTP → S3).
-
-👉 Question : ton application a besoin de lire/écrire beaucoup de petits fichiers fréquemment, ou plutôt des fichiers de taille moyenne/grosse (images, documents, logs) ?
-Cela change beaucoup le choix optimal (WebDAV est bien pour fichiers moyens/gros, mais très mauvais pour plein de petits fichiers).
-
-
-
-
-          
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: code-server-secret
+type: Opaque
+stringData:
+  password: "your-code-server-password"
