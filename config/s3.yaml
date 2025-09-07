@@ -61,3 +61,47 @@ spec:
       volumeMounts:
         - mountPath: /data
           name: s3-bucket
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+          # Base UBI 9
+FROM registry.access.redhat.com/ubi9/ubi:9.3
+
+# Installer dépendances et s3fs-fuse
+RUN dnf install -y \
+      epel-release \
+      fuse \
+      fuse-libs \
+      s3fs-fuse \
+    && dnf clean all
+
+# Créer un utilisateur applicatif non-root
+RUN useradd -m appuser
+
+# Répertoire de montage
+RUN mkdir /mnt/s3 && chown appuser:appuser /mnt/s3
+
+USER appuser
+
+ENTRYPOINT ["sleep", "infinity"]
+
+
+
+
+
+
+
+          
