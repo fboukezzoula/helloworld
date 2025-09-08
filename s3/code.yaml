@@ -1,0 +1,412 @@
+FROM registry.access.redhat.com/ubi9/ubi:9.3
+
+# Installer outils build
+RUN dnf install -y gcc make automake autoconf \
+    fuse fuse-devel wget tar \
+    && dnf clean all
+
+# Télécharger et compiler davfs2
+RUN wget https://deb.debian.org/debian/pool/main/d/davfs2/davfs2_1.6.1.orig.tar.xz -O /tmp/davfs2.tar.xz \
+    && tar -xf /tmp/davfs2.tar.xz -C /tmp \
+    && cd /tmp/davfs2-1.6.1 \
+    && ./configure --prefix=/usr \
+    && make && make install \
+    && rm -rf /tmp/davfs2*
+
+# Créer user applicatif
+RUN useradd -m appuser && mkdir /data && chown appuser:appuser /data
+
+USER appuser
+
+CMD ["sleep", "infinity"]
+
+
+
+
+# UBI9 comme base
+FROM registry.access.redhat.com/ubi9/ubi:9.3
+
+# Installer les dépendances de build
+RUN dnf install -y \
+      gcc \
+      make \
+      automake \
+      autoconf \
+      fuse \
+      fuse-devel \
+      wget \
+      tar \
+      gzip \
+      which \
+      pkgconfig \
+    && dnf clean all
+
+# Télécharger et compiler davfs2 (version stable 1.6.1)
+RUN wget https://deb.debian.org/debian/pool/main/d/davfs2/davfs2_1.6.1.orig.tar.xz -O /tmp/davfs2.tar.xz \
+    && tar -xf /tmp/davfs2.tar.xz -C /tmp \
+    && cd /tmp/davfs2-1.6.1 \
+    && ./configure --prefix=/usr \
+    && make \
+    && make install \
+    && rm -rf /tmp/davfs2*
+
+# Créer un utilisateur applicatif non-root
+RUN useradd -m appuser \
+    && mkdir -p /data \
+    && chown appuser:appuser /data
+
+# Passer en user applicatif
+USER appuser
+
+# Par défaut, on ne monte rien → tu peux override la CMD
+CMD ["sleep", "infinity"]
+
+
+
+
+
+
+containers:
+  - name: app
+    image: mon-registry.local/ubi9-davfs2:latest
+    command:
+      - sh
+      - -c
+      - |
+        mkdir -p /data
+        mount -t davfs http://localhost:8080/ /data -o uid=1000,gid=1000,username=,password=
+        echo "S3 via WebDAV monté sur /data"
+        sleep infinity
+    securityContext:
+      runAsUser: 1000
+      runAsGroup: 1000
+
+
+
+
+
+*****
+
+
+
+
+# -------- Étape 1 : build --------
+FROM registry.access.redhat.com/ubi9/ubi:9.3 AS builder
+
+# Installer les dépendances de build
+RUN dnf install -y \
+      gcc \
+      make \
+      automake \
+      autoconf \
+      fuse \
+      fuse-devel \
+      wget \
+      tar \
+      gzip \
+      pkgconfig \
+      which \
+    && dnf clean all
+
+# Télécharger et compiler davfs2 (version stable)
+RUN wget https://deb.debian.org/debian/pool/main/d/davfs2/davfs2_1.6.1.orig.tar.xz -O /tmp/davfs2.tar.xz \
+    && tar -xf /tmp/davfs2.tar.xz -C /tmp \
+    && cd /tmp/davfs2-1.6.1 \
+    && ./configure --prefix=/usr \
+    && make \
+    && make install
+
+# -------- Étape 2 : image finale --------
+FROM registry.access.redhat.com/ubi9/ubi:9.3
+
+# Installer juste ce qui est nécessaire à l'exécution
+RUN dnf install -y fuse wget \
+    && dnf clean all
+
+# Copier davfs2 depuis l'image builder
+COPY --from=builder /usr/bin/mount.davfs /usr/bin/
+COPY --from=builder /usr/sbin/mount.davfs /usr/sbin/ || true
+COPY --from=builder /usr/share/davfs2 /usr/share/davfs2
+COPY --from=builder /etc/davfs2 /etc/davfs2
+
+# Créer un utilisateur applicatif non-root
+RUN useradd -m appuser \
+    && mkdir -p /data \
+    && chown appuser:appuser /data
+
+USER appuser
+
+CMD ["sleep", "infinity"]
+
+
+
+
+******
+
+
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-with-s3-test
+spec:
+  containers:
+    # --- Sidecar rclone qui expose ton bucket en WebDAV ---
+    - name: rclone
+      image: rclone/rclone:latest
+      args:
+        - serve
+        - webdav
+        - --addr=:8080
+        - s3:my-bucket
+      env:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: s3-credentials
+              key: accessKey
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: s3-credentials
+              key: secretKey
+      ports:
+        - containerPort: 8080
+
+    # --- Ton app avec davfs2 ---
+    - name: app
+      image: mon-registry.local/ubi9-davfs2:latest
+      command:
+        - sh
+        - -c
+        - |
+          echo "==> Montage WebDAV..."
+          mkdir -p /data
+          mount -t davfs http://localhost:8080/ /data -o uid=1000,gid=1000,username=,password=
+
+          echo "==> Test écriture dans /data"
+          echo "Hello depuis Kubernetes $(date)" > /data/test.txt
+
+          echo "==> Vérification du fichier en local"
+          ls -l /data
+          cat /data/test.txt
+
+          echo "==> Sleep pour inspection"
+          sleep 3600
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+
+
+
+
+
+*****
+
+
+
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: s3-cache-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi   # taille pour cache/temp
+  storageClassName: standard   # adapter à ton cluster
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-with-s3
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: app-with-s3
+  template:
+    metadata:
+      labels:
+        app: app-with-s3
+    spec:
+      containers:
+        # --- Sidecar rclone ---
+        - name: rclone
+          image: rclone/rclone:latest
+          args:
+            - serve
+            - webdav
+            - --addr=:8080
+            - s3:my-bucket
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: accessKey
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: secretKey
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: s3-cache
+              mountPath: /cache
+
+        # --- Application avec davfs2 ---
+        - name: app
+          image: mon-registry.local/ubi9-davfs2:latest
+          command:
+            - sh
+            - -c
+            - |
+              echo "==> Montage WebDAV..."
+              mkdir -p /data
+              mount -t davfs http://localhost:8080/ /data -o uid=1000,gid=1000,username=,password=
+
+              echo "==> Vérification accès S3"
+              echo "Hello depuis replica $(hostname) - $(date)" > /data/replica-$(hostname).txt
+
+              echo "==> Lancement app (ici on dort)"
+              sleep infinity
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+          volumeMounts:
+            - name: s3-cache
+              mountPath: /cache
+
+      volumes:
+        - name: s3-cache
+          persistentVolumeClaim:
+            claimName: s3-cache-pvc
+
+
+
+
+🔑 Explications
+
+PVC s3-cache-pvc : stockage persistant pour le cache du montage.
+
+Deployment : 2 replicas de ton app, chacun avec son sidecar rclone.
+
+Montage /data via davfs2 : chaque replica écrit dans le bucket S3 via rclone.
+
+Les fichiers comme replica-<hostname>.txt permettront de vérifier que chaque pod écrit bien dans le même bucket partagé.
+
+
+
+
+
+***
+
+
+Le StatefulSet est parfait si tu veux que chaque réplique ait son propre PVC (stockage dédié, utile si tu veux que chaque pod garde son propre cache local ou des fichiers temporaires indépendants).
+
+
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: app-with-s3
+spec:
+  serviceName: app-with-s3
+  replicas: 3
+  selector:
+    matchLabels:
+      app: app-with-s3
+  template:
+    metadata:
+      labels:
+        app: app-with-s3
+    spec:
+      containers:
+        # --- Sidecar rclone ---
+        - name: rclone
+          image: rclone/rclone:latest
+          args:
+            - serve
+            - webdav
+            - --addr=:8080
+            - s3:my-bucket
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: accessKey
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: secretKey
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: s3-cache
+              mountPath: /cache
+
+        # --- Application avec davfs2 ---
+        - name: app
+          image: mon-registry.local/ubi9-davfs2:latest
+          command:
+            - sh
+            - -c
+            - |
+              echo "==> Montage WebDAV..."
+              mkdir -p /data
+              mount -t davfs http://localhost:8080/ /data -o uid=1000,gid=1000,username=,password=
+
+              echo "==> Test écriture"
+              echo "Hello depuis StatefulSet $(hostname) - $(date)" > /data/stateful-$(hostname).txt
+
+              echo "==> Sleep pour inspection"
+              sleep infinity
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+          volumeMounts:
+            - name: s3-cache
+              mountPath: /cache
+  volumeClaimTemplates:
+    - metadata:
+        name: s3-cache
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+        storageClassName: standard   # à adapter à ton cluster
+
+
+Points clés
+
+StatefulSet → chaque pod a un identifiant stable (app-with-s3-0, app-with-s3-1, etc.).
+volumeClaimTemplates → génère un PVC unique par pod (s3-cache-app-with-s3-0, etc.).
+Chaque pod écrit dans le même bucket S3, mais garde son cache isolé.
+Dans le bucket, tu retrouveras des fichiers stateful-app-with-s3-0.txt, stateful-app-with-s3-1.txt, etc.
+
+
+kubectl apply -f app-with-s3-statefulset.yaml
+kubectl get pods -l app=app-with-s3
+kubectl get pvc
+kubectl exec -it app-with-s3-0 -c rclone -- rclone ls s3:my-bucket
+
+👉 Avec ça, tu as :
+
+Pod de test ✅
+
+Deployment scalable avec PVC partagé ✅
+
+StatefulSet avec PVC par pod ✅
+
+🎯 Tu es armé pour tous les cas d’usage !
+
+Veux-tu que je te prépare aussi un diagramme visuel (schéma d’architecture) montrant comment app ↔ davfs2 ↔ rclone ↔ S3 s’articulent dans chaque cas (Pod, Deployment, StatefulSet) ?
+
+
