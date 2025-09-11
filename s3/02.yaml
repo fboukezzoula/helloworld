@@ -1,0 +1,147 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: code-server-s3
+spec:
+  containers:
+    # --- Sidecar rclone mount ---
+    - name: rclone
+      image: rclone/rclone:latest
+      args:
+        - mount
+        - s3:my-bucket/config  # Dossier config dans le bucket
+        - /shared/config
+        - --allow-other
+        - --allow-non-empty
+        - --vfs-cache-mode=full
+        - --dir-cache-time=5s
+        - --poll-interval=10s
+        - --daemon-timeout=0
+      env:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: s3-credentials
+              key: accessKey
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: s3-credentials
+              key: secretKey
+        - name: RCLONE_CONFIG_S3_TYPE
+          value: "s3"
+        - name: RCLONE_CONFIG_S3_PROVIDER
+          value: "AWS"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      volumeMounts:
+        - name: shared-config
+          mountPath: /shared/config
+          mountPropagation: Bidirectional
+      lifecycle:
+        preStop:
+          exec:
+            command: ["fusermount", "-u", "/shared/config"]
+
+    # --- Code-server ---
+    - name: code-server
+      image: codercom/code-server:latest
+      args:
+        - --bind-addr=0.0.0.0:8080
+        - --auth=password
+        - --disable-telemetry
+        - /workspace
+      env:
+        - name: PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: code-server-secret
+              key: password
+        - name: SHELL
+          value: /bin/bash
+      ports:
+        - containerPort: 8080
+          name: http
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+        - name: shared-config
+          mountPath: /home/coder/.config
+          mountPropagation: HostToContainer
+      readinessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+        initialDelaySeconds: 10
+        periodSeconds: 5
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+        initialDelaySeconds: 30
+        periodSeconds: 30
+      resources:
+        requests:
+          memory: 512Mi
+          cpu: 100m
+        limits:
+          memory: 2Gi
+          cpu: 1000m
+
+  volumes:
+    - name: workspace
+      emptyDir:
+        sizeLimit: 10Gi
+    - name: shared-config
+      emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: code-server-service
+spec:
+  selector:
+    app: code-server
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+  type: ClusterIP
+
+---
+# Secrets
+apiVersion: v1
+kind: Secret
+metadata:
+  name: s3-credentials
+type: Opaque
+stringData:
+  accessKey: "YOUR_S3_ACCESS_KEY"
+  secretKey: "YOUR_S3_SECRET_KEY"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: code-server-secret
+type: Opaque
+stringData:
+  password: "your-code-server-password"
+
+
+
+Cette approche évite les problèmes de mount :
+
+InitContainer : Récupère la config S3 au démarrage
+Sidecar rclone : Synchronise les changements vers S3 toutes les 5min
+Pas de mount complexe : Utilise un simple volume partagé
+
+Plus robuste pour les environnements restrictifs !
+
