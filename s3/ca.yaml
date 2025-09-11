@@ -227,3 +227,111 @@ encoding = Slash,Dot
 ca_cert = /path/to/your/ca-bundle.pem
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Here is a full example of an rclone.conf entry for an S3-compatible storage (like Scality) with a custom CA certificate:
+
+INI
+[scality-s3]
+type = s3
+provider = Other
+env_auth = false
+access_key_id = YOUR_ACCESS_KEY
+secret_access_key = YOUR_SECRET_KEY
+endpoint = https://your-scality-endpoint.example.com
+region = us-east-1
+location_constraint =
+acl = private
+storage_class =
+no_check_bucket = true
+v2_auth = false
+server_side_encryption =
+encoding = Slash,Dot
+# Path to your custom CA certificate
+ca_cert = /path/to/your/ca-bundle.pem
+How to use:
+
+Replace YOUR_ACCESS_KEY and YOUR_SECRET_KEY with your Scality credentials.
+Set endpoint to the Scality S3 endpoint URL.
+Update ca_cert to the local file path of your CA certificate bundle (in PEM format).
+Note:
+
+Make sure your rclone version supports the ca_cert option (rclone v1.58.0 and above).
+The ca_cert parameter tells rclone to use a custom CA certificate when connecting to S3, which is useful for self-signed or private certificate authorities.
+Let me know if you need a sample CA certificate file or more details!
+
+bucket name ?
+The rclone configuration example I provided earlier does not specify a bucket name directly in the config file (rclone.conf). The bucket name is typically provided as part of the remote path when you use rclone commands.
+
+For example, if your bucket is named my-bucket, you would reference it like this in rclone commands:
+
+rclone ls scality-s3:my-bucket
+
+scality-s3 is the name of the remote (from the rclone.conf section).
+my-bucket is the bucket name.
+If you want to specify or create a bucket, you do so when running rclone commands, not in the config itself.
+
+Would you like an example command using a specific bucket name? If so, please provide the bucket name you'd like to use, or let me know if you want advice on naming conventions!
+
+with env file 
+Here’s a complete example for configuring rclone with Scality S3, a custom CA certificate, and using an environment (.env) file to manage credentials and endpoints.
+
+1. .env File Example
+Create a file named .env (in the same directory where you run rclone), with these contents:
+
+env
+RCLONE_S3_ACCESS_KEY_ID=YOUR_ACCESS_KEY
+RCLONE_S3_SECRET_ACCESS_KEY=YOUR_SECRET_KEY
+RCLONE_S3_ENDPOINT=https://your-scality-endpoint.example.com
+RCLONE_S3_CA_CERT=/path/to/your/ca-bundle.pem
+Replace the values as needed for your environment.
+
+2. rclone.conf Example
+In your ~/.config/rclone/rclone.conf (as referenced in home.txt):
+
+INI
+[scality-s3]
+type = s3
+provider = Other
+env_auth = true
+region = us-east-1
+no_check_bucket = true
+env_auth = true tells rclone to use environment variables for credentials and endpoint.
+Do not specify keys, secret, endpoint, or ca_cert directly in this file.
+3. Usage Example (with bucket name)
+Suppose your bucket is named my-bucket. Use a command like:
+
+bash
+export $(grep -v '^#' .env | xargs)  # Load the .env variables into the environment
+
+rclone ls scality-s3:my-bucket
+4. How rclone uses the env variables
+RCLONE_S3_ACCESS_KEY_ID → AWS Access Key
+RCLONE_S3_SECRET_ACCESS_KEY → AWS Secret Key
+RCLONE_S3_ENDPOINT → S3-compatible endpoint (Scality)
+RCLONE_S3_CA_CERT → Path to your custom CA certificate
+Summary
+Bucket name is referenced in the rclone command, not the config.
+All sensitive info is managed via the .env file.
+Use env_auth = true in the config to activate environment variable usage.
+The CA certificate path is set via an environment variable.
+Let me know if you need a sample CA certificate or further details!
+
+
+
+
+
+
