@@ -207,3 +207,23 @@ bashkubectl exec -it code-server-s3 -c sync-config-down -- rclone lsd s3:my-buck
 La variable RCLONE_CA_BUNDLE est l'équivalent de AWS_CA_BUNDLE pour rclone.
 
 
+
+[scality-s3]
+type = s3
+provider = Other
+env_auth = false
+access_key_id = YOUR_ACCESS_KEY
+secret_access_key = YOUR_SECRET_KEY
+endpoint = https://your-scality-endpoint.example.com
+region = us-east-1
+location_constraint =
+acl = private
+storage_class =
+no_check_bucket = true
+v2_auth = false
+server_side_encryption =
+encoding = Slash,Dot
+# Path to your custom CA certificate
+ca_cert = /path/to/your/ca-bundle.pem
+
+
