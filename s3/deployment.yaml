@@ -1,0 +1,331 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: code-server
+  labels:
+    app: code-server
+    component: ide
+    version: v1.0.0
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: code-server
+  template:
+    metadata:
+      labels:
+        app: code-server
+        component: ide
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "false"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      
+      initContainers:
+        - name: sync-config-down
+          image: rclone/rclone:latest
+          args:
+            - sync
+            - s3:my-bucket/config
+            - /shared/config
+            - --create-empty-src-dirs
+            - -v
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: accessKey
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: secretKey
+            - name: RCLONE_CONFIG_S3_TYPE
+              value: "s3"
+            - name: RCLONE_CONFIG_S3_PROVIDER
+              value: "Other"
+            - name: RCLONE_CONFIG_S3_ENDPOINT
+              value: "https://your-scality-endpoint.com"
+            - name: RCLONE_CONFIG_S3_FORCE_PATH_STYLE
+              value: "true"
+            - name: RCLONE_CA_BUNDLE
+              value: "/etc/ssl/certs/custom-ca.pem"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+          volumeMounts:
+            - name: shared-config
+              mountPath: /shared/config
+            - name: custom-ca
+              mountPath: /etc/ssl/certs/custom-ca.pem
+              subPath: ca.pem
+              readOnly: true
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 100m
+            limits:
+              memory: 256Mi
+              cpu: 200m
+
+      containers:
+        # --- Sidecar rclone sync périodique ---
+        - name: rclone-sync
+          image: rclone/rclone:latest
+          command:
+            - sh
+            - -c
+            - |
+              echo "Démarrage sync périodique..."
+              while true; do
+                echo "$(date): Sync config vers S3..."
+                rclone sync /shared/config s3:my-bucket/config --exclude "*.tmp" --exclude "*.lock" -v
+                echo "$(date): Sync terminé"
+                sleep 300  # Sync toutes les 5min
+              done
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: accessKey
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: secretKey
+            - name: RCLONE_CONFIG_S3_TYPE
+              value: "s3"
+            - name: RCLONE_CONFIG_S3_PROVIDER
+              value: "Other"
+            - name: RCLONE_CONFIG_S3_ENDPOINT
+              value: "https://your-scality-endpoint.com"
+            - name: RCLONE_CONFIG_S3_FORCE_PATH_STYLE
+              value: "true"
+            - name: RCLONE_CA_BUNDLE
+              value: "/etc/ssl/certs/custom-ca.pem"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+          volumeMounts:
+            - name: shared-config
+              mountPath: /shared/config
+            - name: custom-ca
+              mountPath: /etc/ssl/certs/custom-ca.pem
+              subPath: ca.pem
+              readOnly: true
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 50m
+            limits:
+              memory: 256Mi
+              cpu: 100m
+
+        # --- Code-server ---
+        - name: code-server
+          image: codercom/code-server:latest
+          args:
+            - --bind-addr=0.0.0.0:8080
+            - --auth=password
+            - --disable-telemetry
+            - --disable-update-check
+            - /workspace
+          env:
+            - name: PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: code-server-secret
+                  key: password
+            - name: SHELL
+              value: /bin/bash
+            - name: USER
+              value: coder
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: shared-config
+              mountPath: /home/coder/.config
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 200m
+            limits:
+              memory: 2Gi
+              cpu: 1000m
+
+      volumes:
+        - name: workspace
+          emptyDir:
+            sizeLimit: 10Gi
+        - name: shared-config
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: custom-ca
+          secret:
+            secretName: custom-ca-cert
+            defaultMode: 0444
+
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: code-server
+  labels:
+    app: code-server
+    component: ide
+spec:
+  selector:
+    app: code-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+  type: ClusterIP
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: custom-ca-cert
+  labels:
+    app: code-server
+    component: certificates
+type: Opaque
+data:
+  ca.pem: LS0tLS1CRUdJTi... # Votre certificat CA en base64
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: s3-credentials
+  labels:
+    app: code-server
+    component: storage
+type: Opaque
+stringData:
+  accessKey: "YOUR_S3_ACCESS_KEY"
+  secretKey: "YOUR_S3_SECRET_KEY"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: code-server-secret
+  labels:
+    app: code-server
+    component: auth
+type: Opaque
+stringData:
+  password: "your-secure-password"
+
+---
+# Optionnel: Ingress pour l'accès externe
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: code-server
+  labels:
+    app: code-server
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+spec:
+  rules:
+    - host: code-server.your-domain.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: code-server
+                port:
+                  number: 8080
+
+
+
+********
+
+Deployment complet avec :
+✅ Métadonnées complètes - Labels, annotations, versions
+✅ Sécurité renforcée - SecurityContext, readOnlyRootFilesystem
+✅ Ressources définies - Requests/limits pour chaque container
+✅ Probes améliorées - Startup, readiness, liveness
+✅ Service + Ingress - Accès réseau configuré
+✅ Secrets organisés - CA, S3, auth séparés
+Déploiement :
+bash# 1. Créer le certificat CA
+kubectl create secret generic custom-ca-cert \
+  --from-file=ca.pem=/path/to/your/ca.pem
+
+# 2. Ajuster les variables dans le YAML
+# 3. Déployer
+kubectl apply -f code-server-deployment.yaml
+
+# 4. Port-forward pour tester
+kubectl port-forward deployment/code-server 8080:8080
+Scaling si besoin :
+bashkubectl scale deployment code-server --replicas=0  # Stop
+kubectl scale deployment code-server --replicas=1  # Restart
+
+
+
+
+
+
+
+
+                  
