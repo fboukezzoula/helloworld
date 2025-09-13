@@ -1,3 +1,30 @@
+Voici plusieurs solutions pour contourner le certificat expiré :
+Option 1 : Paramètre code-server
+Ajoutez --ignore-certificate-errors-on-fallback au lancement :
+bashcode-server --ignore-certificate-errors-on-fallback
+Option 2 : Variable d'environnement Node.js
+bashexport NODE_TLS_REJECT_UNAUTHORIZED=0
+code-server
+Option 3 : Configuration navigateur
+Si vous accédez via navigateur, acceptez manuellement le certificat en visitant d'abord l'URL de la galerie directement.
+Option 4 : Configuration dans settings.json
+json{
+  "http.proxyStrictSSL": false,
+  "extensions.verifySignature": false
+}
+
+
+
+
+
+
+
+
+
+
+
+*************
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
