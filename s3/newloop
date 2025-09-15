@@ -15,6 +15,10 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
                     current_custom = getattr(prefix, 'custom_fields', {}) or {}
                     new_custom = value or {}
                     updated_custom = {**current_custom, **new_custom}  # Merge, new values override
+                    # Force update for 'list-available-ips' if provided in new_custom
+                    if 'list-available-ips' in new_custom:
+                        updated_custom['list-available-ips'] = new_custom['list-available-ips']
+                        needs_update = True  # Force needs_update for this field
                     if updated_custom != current_custom:
                         prefix.custom_fields = updated_custom
                         needs_update = True
