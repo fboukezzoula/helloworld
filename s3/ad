@@ -1,0 +1,367 @@
+def sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credential):  # Pass credential
+    logger.info(f"Syncing data to Netbox at {netbox_url}")
+    
+    session = requests.Session()
+    session.verify = config.get('ssl', {}).get('verify', True)
+    session.timeout = config.get('timeouts', {}).get('netbox_api', 30)
+    
+    nb = api(netbox_url, token=netbox_token)
+    nb.http_session = session
+    
+    # Global default tag color from config (used for string tags)
+    default_tag_color = config.get('tags', {}).get('default_color', 'aaaaaa')
+    logger.debug(f"Using global default tag color: {default_tag_color}")
+    
+    setup_custom_fields(nb, config)
+    setup_custom_tags(nb, config)  # Setup custom tags from config.yaml
+    
+    aggregate_map = setup_rirs_and_aggregates(nb, config)
+    role_map = setup_ipam_roles(nb, config)
+    tenant_map, aggregate_tag_filter = setup_tenancy(nb, config, all_network_data)
+    
+    # New: Setup static prefixes and collect child tag map for inheritance
+    child_tag_map = setup_static_prefixes(nb, config)
+    
+    # New: Setup Organization for Azure
+    azure_site_group_id, azure_region_map = setup_organization(nb, config, provider='azure')
+    
+    # New: Setup Organization for AWS (preparation, no sync yet)
+    aws_site_group_id, aws_region_map = setup_organization(nb, config, provider='aws')
+    
+    sync_tag_config = config.get('tags', {}).get('sync_tag', {})
+    sync_tag_name = sync_tag_config.get('name', "azure-sync")
+    sync_tag_desc = sync_tag_config.get('description', "Synced from Azure")
+    sync_tag_color = clean_color(sync_tag_config.get('color', default_tag_color))  # Use configured color or fallback
+    azure_tag = get_or_create_tag(
+        nb,
+        tag_input=sync_tag_name,
+        tag_description=sync_tag_desc,
+        tag_color=sync_tag_color  # Pass the dedicated color
+    )
+    if not azure_tag:
+        logger.error("Failed to create/get azure-sync tag; continuing without it.")
+        azure_tag_dict = []
+    else:
+        azure_tag_dict = [{'id': azure_tag.id}]
+    
+    additional_tags = []
+    additional_tag_configs = config.get('tags', {}).get('additional_tags', [])
+    for tag_item in additional_tag_configs:
+        tag = get_or_create_tag(nb, tag_item, tag_color=default_tag_color)
+        if tag:
+            additional_tags.append({'id': tag.id})
+    
+    for subscription_data in all_network_data:
+        subscription_id = subscription_data['subscription_id']
+        subscription_name = subscription_data['subscription_name']
+        
+        matching_role = None
+        for role_name, role_data in role_map.items():
+            criteria = role_data['match_criteria'].lower()
+            if criteria in subscription_name.lower():
+                matching_role = role_data
+                logger.debug(f"Matched subscription {subscription_name} to role {role_name} using criteria '{criteria}'")
+                break
+            else:
+                logger.debug(f"No match for subscription {subscription_name} with role {role_name} criteria '{criteria}'")
+        
+        if not matching_role:
+            # Assign default "TBD" role if no match
+            default_role_name = 'TBD'  # Assuming the role name is 'TBD' as per example
+            matching_role = role_map.get(default_role_name)
+            if matching_role:
+                logger.info(f"No specific role matched for subscription {subscription_name}; assigning default role '{default_role_name}'")
+            else:
+                logger.warning(f"No specific role matched and default 'TBD' role not found for subscription {subscription_name}")
+        
+        role_id = matching_role['id'] if matching_role else None
+        
+        tenant_data = tenant_map.get(subscription_id)
+        tenant_id = tenant_data['id'] if tenant_data else None
+        
+        network_client = NetworkManagementClient(credential, subscription_id)
+        
+        for vnet in subscription_data['vnets']:
+            address_spaces = vnet['address_space']
+            if not address_spaces:
+                logger.warning(f"Skipping VNet {vnet['name']} (no address spaces)")
+                continue
+            
+            logger.info(f"Processing VNet {vnet['name']} with {len(address_spaces)} address spaces")
+            
+            peering_check = get_vnet_peerings(network_client, vnet['resource_group'], vnet['name'], config)
+            logger.debug(f"Peering check for VNet {vnet['name']}: {peering_check}")
+            
+            # NEW: Fetch all subnets and usages for the VNet once (outside the address space loop for efficiency)
+            # - Subnets: List all subnets in this VNet to calculate allocated IPs.
+            # - Usages: Get usage stats (e.g., how many IPs are actually in use in each subnet).
+            # This uses Azure SDK calls equivalent to 'az network vnet list-available-ips' and subnet queries.
+            try:
+                subnets = list(network_client.subnets.list(vnet['resource_group'], vnet['name']))
+                usages = list(network_client.virtual_networks.list_usage(vnet['resource_group'], vnet['name']))
+                logger.debug(f"Fetched {len(subnets)} subnets and {len(usages)} usage entries for VNet {vnet['name']}")
+            except Exception as e:
+                logger.warning(f"Error fetching subnets or usages for VNet {vnet['name']} in resource group {vnet['resource_group']}: {str(e)}")
+                subnets = []
+                usages = []
+            
+            # New: Get/Create Site for this VNet based on location
+            vnet_location = vnet['location']
+            region_data = azure_region_map.get(vnet_location)
+            site_id = None
+            if region_data:
+                site_prefix = config.get('organization', {}).get('azure', {}).get('site_prefix', 'Azure - ')
+                human_region = region_data['human_name']
+                # Updated: Include shortened subscription_id in site name/slug for uniqueness
+                short_sub_id = subscription_id[:8]  # First 8 characters of subscription ID
+                site_name = f"{site_prefix}{short_sub_id}-{vnet['name']} ({human_region})"
+                site_slug = site_name.lower().replace(" ", "-").replace("(", "").replace(")", "")
+                site_desc = f"Azure VNet: {vnet['name']} in {human_region} (Subscription: {subscription_id} - {subscription_name})"
+                
+                site = get_or_create_site(
+                    nb,
+                    name=site_name,
+                    slug=site_slug,
+                    group_id=azure_site_group_id,
+                    region_id=region_data['id'],
+                    tenant_id=tenant_id,  # New: Assign tenant to site
+                    tags=region_data['tag'],  # Assign the region-specific tag (e.g., [{'id': FRC_tag_id}])
+                    description=site_desc
+                )
+                site_id = site.id if site else None
+                logger.info(f"Processed Site for VNet {vnet['name']}: {site_name} (id: {site_id})")
+            else:
+                logger.warning(f"No region mapping found for Azure location '{vnet_location}'; skipping Site/Region for VNet {vnet['name']}")
+            
+            for idx, address_space in enumerate(address_spaces, 1):
+                logger.debug(f"Syncing address space {idx}/{len(address_spaces)} for VNet {vnet['name']}: {address_space}")
+                
+                # NEW: Calculate available IPs summary for this specific address space
+                # - Default to an error message if calculation fails.
+                available_ips_summary = "Unable to calculate"
+                try:
+                    # Parse the address space as an IP network to get total IPs.
+                    addr_net = ipaddress.ip_network(address_space, strict=False)
+                    total_ips = addr_net.num_addresses
+                    
+                    # Filter subnets that belong to *this* address space (a VNet can have multiple address spaces).
+                    # Skip subnets with None address_prefix
+                    subnets_in_space = [s for s in subnets if s.address_prefix is not None and ipaddress.ip_network(s.address_prefix, strict=False).subnet_of(addr_net)]
+                    logger.debug(f"Found {len(subnets_in_space)} subnets in address space {address_space}")
+                    
+                    # Allocated IPs: Sum of the sizes of all subnets in this address space (including Azure's reserved IPs per subnet).
+                    allocated = 0
+                    for s in subnets_in_space:
+                        if s.address_prefix is not None:
+                            subnet_net = ipaddress.ip_network(s.address_prefix, strict=False)
+                            allocated += subnet_net.num_addresses
+                    
+                    # Used IPs: Sum from Azure's usage stats for these subnets.
+                    # (Usages include IPs actually assigned to resources like NICs, load balancers, etc.)
+                    used = 0
+                    available_in_subnets = 0
+                    for usage in usages:
+                        if '/subnets/' in usage.id:
+                            subnet_name = usage.id.split('/subnets/')[-1].split('/')[0]  # Extract subnet name correctly
+                            for s in subnets_in_space:
+                                if s.name == subnet_name:
+                                    used += int(usage.current_value)  # IPs currently in use (convert to int)
+                                    # Available in subnet: limit - current_value (limit includes reserves)
+                                    available_in_subnets += int(usage.limit - usage.current_value)  # Convert to int
+                                    break
+                    
+                    # Unallocated: Total IPs minus allocated (space not yet subnetted)
+                    unallocated = total_ips - allocated
+                    
+                    # Total available: Unallocated + available slots within existing subnets.
+                    total_available = unallocated + available_in_subnets
+                    
+                    # Format the summary string (as per your example: "ips used and ips availables")
+                    available_ips_summary = f"Used IPs: {used}, Available IPs: {total_available}"
+                    logger.debug(f"Calculated summary for {address_space}: {available_ips_summary}")
+                except Exception as e:
+                    logger.warning(f"Error calculating available IPs for {address_space} in VNet {vnet['name']}: {str(e)}")
+                
+                matching_aggregate = None
+                try:
+                    prefix_net = ipaddress.ip_network(address_space, strict=False)
+                    for agg_prefix, agg_data in aggregate_map.items():
+                        agg_net = ipaddress.ip_network(agg_prefix, strict=False)
+                        if prefix_net.subnet_of(agg_net):
+                            matching_aggregate = agg_data
+                            logger.debug(f"Matched address space {address_space} to aggregate {agg_prefix}")
+                            break
+                except ValueError as e:
+                    logger.warning(f"Invalid IP network for {address_space}: {str(e)}")
+                    continue
+                
+                aggregate_id = matching_aggregate['id'] if matching_aggregate else None
+                
+                # FORCE assign_tenant = True to ensure EVERY prefix gets the tenant (one per subscription)
+                # This ensures all prefixes for a subscription are visible under the tenant in NetBox UI.
+                assign_tenant = True  # Forced to True (ignores aggregate_tag_filter for tenant assignment)
+                logger.debug(f"Forcing tenant assignment for prefix {address_space} (tenant_id: {tenant_id})")
+                
+                prefix_tags = azure_tag_dict + additional_tags
+                if matching_aggregate:
+                    prefix_tags += matching_aggregate['tags']
+                if matching_role:
+                    prefix_tags += matching_role['tags']
+                if region_data and region_data['tag']:
+                    prefix_tags += region_data['tag']  # Add region tag to prefix
+                
+                prefix_defaults = {
+                    'description': f"Azure VNet: {vnet['name']} (Subscription: {subscription_id}) - Address Space {idx}",
+                    'status': 'active',
+                    'tags': prefix_tags
+                }
+                if 'custom_fields' not in prefix_defaults:
+                    prefix_defaults['custom_fields'] = {}
+                prefix_defaults['custom_fields']['peering_check'] = peering_check
+                # NEW: Add the calculated summary to the new custom field.
+                prefix_defaults['custom_fields']['list-available-ips'] = available_ips_summary
+                
+                vnet_prefix, created = get_or_create_prefix(
+                    nb,
+                    address_space,
+                    prefix_defaults,
+                    subscription_name=subscription_name,
+                    subscription_id=subscription_id,
+                    aggregate_id=aggregate_id,
+                    role_id=role_id,
+                    tenant_id=tenant_id if assign_tenant else None,
+                    site_id=site_id,
+                    tags=prefix_tags
+                )
+                
+                action = "Created" if created else "Updated"
+                logger.info(f"{action} prefix for VNet {vnet['name']} address space {idx}: {address_space} (Aggregate: {aggregate_id if aggregate_id else 'None'}, Role: {role_id if role_id else 'None'}, Tenant: {tenant_id if tenant_id else 'None'}, Site: {site_id if site_id else 'None'})")
+
+    # New: After all Azure syncing, apply inherited tags from static child prefixes
+    apply_inherited_tags(nb, child_tag_map)
+
+
+
+
+
+
+
+def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, subscription_id=None, aggregate_id=None, role_id=None, tenant_id=None, site_id=None, tags=None, status='active', is_pool=False):
+    try:
+        existing_prefixes = nb.ipam.prefixes.filter(prefix=prefix_value)
+        
+        if existing_prefixes:
+            logger.info(f"Found existing prefix: {prefix_value}")
+            prefix = list(existing_prefixes)[0]
+            
+            needs_update = False
+            for key, value in defaults.items():
+                if key == 'parent':  
+                    continue
+                if key == 'custom_fields':
+                    # Handle custom fields merging
+                    current_custom = getattr(prefix, 'custom_fields', {}) or {}
+                    new_custom = value or {}
+                    updated_custom = {**current_custom, **new_custom}  # Merge, new values override
+                    # Force update for 'list-available-ips' if provided in new_custom
+                    if 'list-available-ips' in new_custom:
+                        updated_custom['list-available-ips'] = new_custom['list-available-ips']
+                        needs_update = True  # Force needs_update for this field
+                    if updated_custom != current_custom:
+                        prefix.custom_fields = updated_custom
+                        needs_update = True
+                    continue
+                current_value = getattr(prefix, key, None)
+                if current_value != value:
+                    setattr(prefix, key, value)
+                    needs_update = True
+            
+            if subscription_name and subscription_id:
+                custom_fields = getattr(prefix, 'custom_fields', {}) or {}
+                azure_subscription_value = subscription_name
+                
+                existing_value = custom_fields.get('azure_subscription', '')
+                if existing_value != azure_subscription_value or re.search(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', existing_value, re.IGNORECASE):
+                    custom_fields['azure_subscription'] = azure_subscription_value
+                    custom_fields['azure_subscription_url'] = f"https://portal.azure.com/#@/subscription/{subscription_id}/overview"
+                    prefix.custom_fields = custom_fields
+                    needs_update = True
+                    logger.debug(f"Forced update of azure_subscription to clean value: {azure_subscription_value}")
+            
+            if aggregate_id and getattr(prefix, 'aggregate', None) != aggregate_id:
+                prefix.aggregate = aggregate_id
+                needs_update = True
+            
+            if role_id and getattr(prefix, 'role', None) != role_id:
+                prefix.role = role_id
+                needs_update = True
+            
+            if tenant_id and getattr(prefix, 'tenant', None) != tenant_id:
+                prefix.tenant = tenant_id
+                needs_update = True
+            
+            if site_id and getattr(prefix, 'site', None) != site_id:
+                prefix.site = site_id
+                needs_update = True
+            
+            if tags and set(tag.id for tag in prefix.tags) != set(tag['id'] for tag in tags):
+                prefix.tags = tags
+                needs_update = True
+            
+            if prefix.status != status:
+                prefix.status = status
+                needs_update = True
+            
+            if prefix.is_pool != is_pool:
+                prefix.is_pool = is_pool
+                needs_update = True
+            
+            if needs_update:
+                prefix.save()
+                logger.info(f"Updated prefix: {prefix_value}")
+                
+            return prefix, False
+    except AttributeError as e:
+        logger.error(f"Attribute error when updating prefix {prefix_value}: {str(e)}")
+    except Exception as e:
+        logger.debug(f"Error checking for existing prefix {prefix_value}: {str(e)}")
+    
+    try:
+        logger.info(f"Creating new prefix: {prefix_value}")
+        
+        if subscription_name and subscription_id:
+            if 'custom_fields' not in defaults:
+                defaults['custom_fields'] = {}
+            defaults['custom_fields']['azure_subscription'] = subscription_name
+            defaults['custom_fields']['azure_subscription_url'] = f"https://portal.azure.com/#@/subscription/{subscription_id}/overview"
+        
+        if aggregate_id:
+            defaults['aggregate'] = aggregate_id
+        if role_id:
+            defaults['role'] = role_id
+        if tenant_id:
+            defaults['tenant'] = tenant_id
+        if site_id:
+            defaults['site'] = site_id
+        if tags:
+            defaults['tags'] = tags
+        
+        defaults['status'] = status
+        defaults['is_pool'] = is_pool
+        
+        return nb.ipam.prefixes.create(
+            prefix=prefix_value,
+            **defaults
+        ), True
+    except RequestError as e:
+        if "Duplicate prefix found" in str(e):
+            logger.warning(f"Duplicate prefix found: {prefix_value}. Attempting to retrieve existing prefix.")
+            try:
+                existing_prefixes = nb.ipam.prefixes.filter(prefix=prefix_value)
+                if existing_prefixes:
+                    prefix = list(existing_prefixes)[0]
+                    logger.info(f"Retrieved existing prefix: {prefix_value}")
+                    return prefix, False
+            except Exception as inner_e:
+                logger.error(f"Error retrieving duplicate prefix {prefix_value}: {str(inner_e)}")
+        raise
