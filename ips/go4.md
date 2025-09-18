@@ -1,3 +1,5 @@
+go get github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/managementgroups/armmanagementgroups@v2.0.0
+
 // azure-vnet-scanner/internal/azure/scanner.go
 package azure
 
