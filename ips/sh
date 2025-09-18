@@ -1,3 +1,45 @@
+# --- Mapping Subscription -> Management Group (optionnel) ---
+declare -A SUB_TO_MG
+
+# Respecte SKIP_MG=1 pour ignorer cette partie
+if [[ "${SKIP_MG:-0}" -eq 1 ]]; then
+  log INFO "Mapping MG ignoré (SKIP_MG=1)."
+else
+  log INFO "Construction du mapping Subscription -> Management Group..."
+  MG_TIMEOUT="${MG_TIMEOUT:-30}"
+
+  # Installe automatiquement l'extension si demandée
+  az config set extension.use_dynamic_install=yes_without_prompt >/dev/null 2>&1 || true
+
+  if command -v timeout >/dev/null 2>&1; then
+    mgjson=$(timeout "${MG_TIMEOUT}s" az account management-group list -o json 2>/dev/null || echo "[]")
+  else
+    mgjson=$(az account management-group list -o json 2>/dev/null || echo "[]")
+    log WARN "'timeout' non trouvé (sudo dnf install -y coreutils)."
+  fi
+
+  mapfile -t mgroups_list < <(echo "$mgjson" | jq -r '.[].name' 2>/dev/null || true)
+
+  if [[ ${#mgroups_list[@]} -eq 0 ]]; then
+    log WARN "Aucun MG listé ou appel expiré; la colonne 'management group' sera 'N/A'."
+  else
+    for mg in "${mgroups_list[@]}"; do
+      if command -v timeout >/dev/null 2>&1; then
+        members_json=$(timeout "${MG_TIMEOUT}s" az account management-group show --name "$mg" -e -r -o json 2>/dev/null || echo "[]")
+      else
+        members_json=$(az account management-group show --name "$mg" -e -r -o json 2>/dev/null || echo "[]")
+      fi
+      mapfile -t subs_for_mg < <(echo "$members_json" | jq -r '.. | objects | select(.type=="Subscription") | .id' 2>/dev/null || true)
+      for fullid in "${subs_for_mg[@]}"; do
+        sid=$(echo "$fullid" | sed 's@.*/subscriptions/@@; s@/@@g')
+        [[ -n "$sid" ]] && SUB_TO_MG["$sid"]="$mg"
+      done
+    done
+  fi
+fi
+
+
+
 compute_used_and_avail_for_prefix() {
   local prefix="$1"; shift
   local pairs=("$@") # éléments "cidr,used"
