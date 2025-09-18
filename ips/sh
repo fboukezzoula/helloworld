@@ -1,3 +1,53 @@
+# VNet Gateway via az resource (forme stable)
+if command -v timeout >/dev/null 2>&1; then
+  mapfile -t vngw_subnets < <(
+    timeout "${AZ_TIMEOUT:-30}s" az resource list --resource-type Microsoft.Network/virtualNetworkGateways -o json 2>/dev/null |
+    jq -r '.[] 
+      | (.properties.ipConfigurations // [])[]? 
+      | (.properties.subnet.id // .subnet.id // empty)'
+  )
+else
+  mapfile -t vngw_subnets < <(
+    az resource list --resource-type Microsoft.Network/virtualNetworkGateways -o json 2>/dev/null |
+    jq -r '.[] 
+      | (.properties.ipConfigurations // [])[]? 
+      | (.properties.subnet.id // .subnet.id // empty)'
+  )
+fi
+for sid in "${vngw_subnets[@]}"; do
+  [[ -z "$sid" ]] && continue
+  (( USED_COUNT_BY_SUBNET["$sid"]+=1 ))
+done
+vngw_cnt=${#vngw_subnets[@]}
+log DEBUG "    VNet Gateway IP configs: $vngw_cnt"
+
+
+
+
+
+Tests rapides
+
+Vérifie la forme sur ta machine:
+az network vnet-gateway list -o json | jq '.[0] | {hasIpConf: has("ipConfigurations"), hasPropsIpConf: (.properties|has("ipConfigurations"))}'
+az network vnet-gateway list -o json | jq -r '.[] | ( .ipConfigurations // .properties.ipConfigurations // [] )[]? | ( .subnet.id // .properties.subnet.id // empty )'
+Si la commande jq ci‑dessus renvoie des IDs de subnets, tu es bon.
+Astuce sécurité
+
+Pour éviter tout nouveau “blocage”:
+az config set extension.use_dynamic_install=yes_without_prompt
+Utilise AZ_TIMEOUT=30 pour borner chaque appel: AZ_TIMEOUT=30 SKIP_MG=1 ./azure-vnet-scan.sh ...
+
+
+
+
+
+
+
+
+
+
+
+
 # --- Mapping Subscription -> Management Group (optionnel) ---
 declare -A SUB_TO_MG
 
