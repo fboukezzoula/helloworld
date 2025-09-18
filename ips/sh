@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# azure-vnet-scan.sh
+# Requirements: az cli, jq, python3
+# Usage examples:
+#   ./azure-vnet-scan.sh -a -r "westeurope,francecentral" -o vnets.csv
+#   ./azure-vnet-scan.sh -s subId1,subName2 -o out.csv
+#   ./azure-vnet-scan.sh -m MyMgmtGroup -r westeurope -o out.csv
+
+set -euo pipefail
+
+OUTFILE="vnet-scan.csv"
+SUBS_INPUT=""
+MGROUP=""
+ALL_SUBS=false
+REGION_FILTERS=()
+
+print_help() {
+  cat <<EOF
+Usage: $0 [options]
+Options:
+  -s    Comma-separated subscriptions (id or name)
+  -m    Management group (id or name)
+  -a    Scan all subscriptions accessible
+  -r    Region filter (comma-separated, example: "westeurope,francecentral")
+  -o    Output CSV file (default: $OUTFILE)
+  -h    Help
+EOF
+}
+
+while getopts "s:m:r:ao:h" opt; do
+  case $opt in
+    s) SUBS_INPUT="$OPTARG" ;;
+    m) MGROUP="$OPTARG" ;;
+    a) ALL_SUBS=true ;;
+    r) IFS=',' read -r -a REGION_FILTERS <<< "$OPTARG" ;;
+    o) OUTFILE="$OPTARG" ;;
+    h) print_help; exit 0 ;;
+    *) print_help; exit 1 ;;
+  esac
+done
+
+declare -a SUBS_LIST=()
+
+# --- Résolution des subscriptions ---
+if [[ -n "$SUBS_INPUT" ]]; then
+  IFS=',' read -r -a tmp <<< "$SUBS_INPUT"
+  for s in "${tmp[@]}"; do
+    if az account show -s "$s" >/dev/null 2>&1; then
+      sid=$(az account show -s "$s" -o tsv --query id)
+      sname=$(az account show -s "$s" -o tsv --query name)
+      SUBS_LIST+=("${sid}::${sname}")
+    fi
+  done
+fi
+
+if [[ -n "$MGROUP" ]]; then
+  mgjson=$(az account management-group show --name "$MGROUP" -e -r -o json 2>/dev/null) || true
+  if [[ -n "$mgjson" ]]; then
+    mapfile -t subs_from_mg < <(echo "$mgjson" | jq -r '.. | objects | select(.type=="Subscription") | "\(.id) :: \(.displayName // .name // "")"')
+    for item in "${subs_from_mg[@]}"; do
+      sid=$(echo "$item" | awk -F'::' '{print $1}' | sed 's@.*/subscriptions/@@; s@/@@g')
+      sname=$(echo "$item" | awk -F'::' '{print $2}')
+      SUBS_LIST+=("${sid}::${sname}")
+    done
+  fi
+fi
+
+if $ALL_SUBS; then
+  mapfile -t subs_all < <(az account list -o json | jq -r '.[] | "\(.id) :: \(.name)"')
+  for item in "${subs_all[@]}"; do
+    sid=$(echo "$item" | awk -F'::' '{print $1}')
+    sname=$(echo "$item" | awk -F'::' '{print $2}')
+    SUBS_LIST+=("${sid}::${sname}")
+  done
+fi
+
+if [[ ${#SUBS_LIST[@]} -eq 0 ]]; then
+  mapfile -t subs_all < <(az account list -o json | jq -r '.[] | "\(.id) :: \(.name)"')
+  for item in "${subs_all[@]}"; do
+    sid=$(echo "$item" | awk -F'::' '{print $1}')
+    sname=$(echo "$item" | awk -F'::' '{print $2}')
+    SUBS_LIST+=("${sid}::${sname}")
+  done
+fi
+
+IFS=$'\n' SUBS_LIST=($(printf "%s\n" "${SUBS_LIST[@]}" | awk '!seen[$0]++'))
+unset IFS
+
+if [[ ${#SUBS_LIST[@]} -eq 0 ]]; then
+  echo "Erreur: aucune subscription trouvée." >&2
+  exit 3
+fi
+
+# --- Mapping Subscription -> Management Group ---
+declare -A SUB_TO_MG
+mapfile -t mgroups_list < <(az account management-group list -o json 2>/dev/null | jq -r '.[].name' 2>/dev/null || true)
+for mg in "${mgroups_list[@]}"; do
+  members_json=$(az account management-group show --name "$mg" -e -r -o json 2>/dev/null || echo "[]")
+  mapfile -t subs_for_mg < <(echo "$members_json" | jq -r '.. | objects | select(.type=="Subscription") | .id' 2>/dev/null || true)
+  for fullid in "${subs_for_mg[@]}"; do
+    sid=$(echo "$fullid" | sed 's@.*/subscriptions/@@; s@/@@g')
+    [[ -n "$sid" ]] && SUB_TO_MG["$sid"]="$mg"
+  done
+done
+
+# --- Header CSV ---
+echo "management group,subscription id,subscription name,vnet name,adresse space,nb subnets,ips disponibles,région" > "$OUTFILE"
+
+# --- Fonction calcul des IP dispos ---
+compute_available_ips() {
+  local prefix="$1"; shift
+  local subnets=("$@")
+  python3 - "$prefix" "$(printf "%s\n" "${subnets[@]}" | paste -sd'|')" <<'PY'
+import ipaddress, sys
+prefix=sys.argv[1]; subs_arg=sys.argv[2]
+subs=subs_arg.split("|") if subs_arg else []
+try: net=ipaddress.ip_network(prefix, strict=False)
+except: print("0"); sys.exit(0)
+if net.version!=4: print("0"); sys.exit(0)
+total=net.num_addresses
+count_subnets=0
+for s in subs:
+  try: sn=ipaddress.ip_network(s.strip(), strict=False)
+  except: continue
+  if sn.subnet_of(net): count_subnets+=1
+avail=total-5*count_subnets
+print(str(avail if avail>=0 else 0))
+PY
+}
+
+# --- Loop sur les subscriptions ---
+for sitem in "${SUBS_LIST[@]}"; do
+  sub_id=$(echo "$sitem" | awk -F'::' '{print $1}')
+  sub_name=$(echo "$sitem" | awk -F'::' '{print $2}')
+  az account set --subscription "$sub_id" >/dev/null 2>&1 || continue
+
+  vnets_json=$(az network vnet list -o json 2>/dev/null || echo "[]")
+  vcount=$(echo "$vnets_json" | jq 'length')
+  [[ "$vcount" -eq 0 ]] && continue
+
+  mg_name="${SUB_TO_MG[$sub_id]:-N/A}"
+
+  for i in $(seq 0 $((vcount-1))); do
+    vnet=$(echo "$vnets_json" | jq ".[$i]")
+    vnet_name=$(echo "$vnet" | jq -r '.name')
+    location=$(echo "$vnet" | jq -r '.location')
+
+    # --- Filtre par régions ---
+    if [[ ${#REGION_FILTERS[@]} -gt 0 ]]; then
+      match=false
+      for r in "${REGION_FILTERS[@]}"; do
+        if [[ "$location" == "$r" ]]; then
+          match=true
+          break
+        fi
+      done
+      $match || continue
+    fi
+
+    mapfile -t addr_prefixes < <(echo "$vnet" | jq -r '.addressSpace.addressPrefixes[]?')
+    mapfile -t subnet_prefixes < <(echo "$vnet" | jq -r '.subnets[]?.addressPrefix? // empty')
+
+    nb_subnets=${#subnet_prefixes[@]}
+
+    for prefix in "${addr_prefixes[@]}"; do
+      [[ -z "$prefix" ]] && continue
+      if [[ "$prefix" == *:* ]]; then
+        ips_avail=0
+      else
+        ips_avail=$(compute_available_ips "$prefix" "${subnet_prefixes[@]}")
+      fi
+      echo "\"$mg_name\",\"$sub_id\",\"$sub_name\",\"$vnet_name\",\"$prefix\",\"$nb_subnets\",\"$ips_avail\",\"$location\"" >> "$OUTFILE"
+    done
+  done
+done
+
+echo "✅ Scan terminé. Résultats enregistrés dans : $OUTFILE"
