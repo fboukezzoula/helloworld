@@ -1,5 +1,4 @@
-go get github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/managementgroups/armmanagementgroups@v2.0.0
-
+go get -u github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/managementgroups/armmanagementgroups
 // azure-vnet-scanner/internal/azure/scanner.go
 package azure
 
@@ -10,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.comcom/your-username/azure-vnet-scanner/internal/calculator"
+	"github.com/your-username/azure-vnet-scanner/internal/calculator"
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armsubscriptions"
 	"golang.org/x/sync/errgroup"
 )
@@ -93,12 +92,10 @@ func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) ([]ScanResult, err
 }
 
 // buildManagementGroupCache creates a map of SubscriptionID -> ManagementGroupName.
-// This is FAR more efficient than looking up the parent for each subscription individually.
 func (s *Scanner) buildManagementGroupCache(ctx context.Context) (map[string]string, error) {
 	log.Println("Building management group cache for all subscriptions...")
 	cache := make(map[string]string)
 	
-	// NewListEntitiesPager is the correct method name and is more robust.
 	pager := s.clients.mgClient.NewListEntitiesPager(nil)
 
 	for pager.More() {
@@ -108,7 +105,6 @@ func (s *Scanner) buildManagementGroupCache(ctx context.Context) (map[string]str
 		}
 
 		for _, entity := range page.Value {
-			// An entity is a Management Group that can have subscriptions.
 			if entity.Properties == nil || entity.Properties.Subscriptions == nil || entity.Properties.DisplayName == nil {
 				continue
 			}
@@ -116,7 +112,6 @@ func (s *Scanner) buildManagementGroupCache(ctx context.Context) (map[string]str
 			mgName := *entity.Properties.DisplayName
 			for _, sub := range entity.Properties.Subscriptions {
 				if sub.ID != nil {
-					// The ID is in the format /subscriptions/GUID
 					parts := strings.Split(*sub.ID, "/")
 					subID := parts[len(parts)-1]
 					cache[subID] = mgName
@@ -184,7 +179,6 @@ func (s *Scanner) filterSubscriptionsByTarget(allSubs map[string]armsubscription
 func (s *Scanner) getSubscriptionsInManagementGroup(ctx context.Context, mgName string, allSubs map[string]armsubscriptions.Subscription) (map[string]armsubscriptions.Subscription, error) {
 	mgsToScan := []string{mgName}
 
-	// Use NewGetDescendantsPager to get a flat list of all MGs under the target one.
 	log.Printf("Finding all descendant Management Groups under '%s'...", mgName)
 	descendantsPager := s.clients.mgClient.NewGetDescendantsPager(mgName, nil)
 	for descendantsPager.More() {
@@ -249,28 +243,4 @@ func (s *Scanner) scanSubscriptionForVNets(ctx context.Context, sub armsubscript
 			return fmt.Errorf("failed to list vnets in sub %s: %w", *sub.DisplayName, err)
 		}
 
-		for _, vnet := range page.Value {
-			if vnet.Properties == nil || vnet.Properties.AddressSpace == nil || vnet.Properties.AddressSpace.AddressPrefixes == nil {
-				continue
-			}
-
-			for _, prefix := range vnet.Properties.AddressSpace.AddressPrefixes {
-				availableIPs, err := calculator.AvailableIPsInCIDR(*prefix)
-				if err != nil {
-					log.Printf("Warning: could not parse CIDR %s for VNet %s: %v", *prefix, *vnet.Name, err)
-					continue
-				}
-
-				resultsChan <- ScanResult{
-					SubscriptionName: *sub.DisplayName,
-					ManagementGroup:  mgName,
-					VNetName:         *vnet.Name,
-					VNetRegion:       *vnet.Location,
-					AddressSpace:     *prefix,
-					AvailableIPs:     availableIPs,
-				}
-			}
-		}
-	}
-	return nil
-}
+		for _, vnet := range page.Value 
