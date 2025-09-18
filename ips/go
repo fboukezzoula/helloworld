@@ -1,0 +1,644 @@
+azure-vnet-scanner/
+├── cmd/
+│   └── root.go        # Main Cobra command setup
+├── internal/
+│   ├── azure/
+│   │   ├── auth.go    # Handles Azure authentication
+│   │   ├── clients.go # Manages Azure SDK clients
+│   │   └── scanner.go # Core logic for scanning resources
+│   ├── calculator/
+│   │   └── ip.go      # IP address calculation logic
+│   └── reporter/
+│       └── csv.go     # Handles CSV output formatting
+├── go.mod
+├── go.sum
+└── main.go
+
+
+Step 1: Initialize the Project
+
+# Create the main project directory
+mkdir azure-vnet-scanner
+cd azure-vnet-scanner
+
+# Create the internal package structure
+mkdir -p cmd internal/azure internal/calculator internal/reporter
+
+# Initialize the Go module
+go mod init github.com/your-username/azure-vnet-scanner
+
+# Get the necessary Go modules
+go get -u github.com/spf13/cobra@v1.8.0
+go get -u github.com/Azure/azure-sdk-for-go/sdk/azidentity@v1.5.1
+go get -u github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork@v4.0.0
+go get -u github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armsubscriptions@v2.0.0
+go get -u github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/managementgroups/armmanagementgroups@v2.0.0
+go get -u golang.org/x/sync/errgroup
+
+Step 2: The Go Code
+Now, let's create the Go files for each part of the project.
+
+main.go
+This is the entry point of our application. It simply executes the root command.
+
+// azure-vnet-scanner/main.go
+package main
+
+import (
+	"github.com/your-username/azure-vnet-scanner/cmd"
+)
+
+func main() {
+	cmd.Execute()
+}
+
+// azure-vnet-scanner/main.go
+package main
+
+import (
+	"github.com/your-username/azure-vnet-scanner/cmd"
+)
+
+func main() {
+	cmd.Execute()
+}
+
+
+
+cmd/root.go
+This file sets up the main command-line interface using the Cobra library. It defines the flags for targeting subscriptions, management groups, and authentication.
+
+// azure-vnet-scanner/cmd/root.go
+package cmd
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+
+	"github.com/your-username/azure-vnet-scanner/internal/azure"
+	"github.com/your-username/azure-vnet-scanner/internal/reporter"
+	"github.com/spf13/cobra"
+)
+
+var (
+	subscriptions     []string
+	managementGroup   string
+	useServicePrincipal bool
+)
+
+var rootCmd = &cobra.Command{
+	Use:   "azure-vnet-scanner",
+	Short: "A tool to scan Azure VNets and report available IPs.",
+	Long: `Azure VNet Scanner is a CLI tool that scans an Azure tenant,
+management group, or specified subscriptions to find all Virtual Networks.
+It then calculates the available IP addresses for each address space and
+outputs the results in a structured format.`,
+	Run: func(cmd *cobra.Command, args []string) {
+		runScanner()
+	},
+}
+
+func init() {
+	rootCmd.Flags().StringSliceVarP(&subscriptions, "subscription", "s", []string{}, "Target specific subscription(s) by name or ID (can be specified multiple times)")
+	rootCmd.Flags().StringVarP(&managementGroup, "management-group", "m", "", "Target a management group by name or ID (scans recursively)")
+	rootCmd.Flags().BoolVar(&useServicePrincipal, "use-spn", false, "Use Service Principal Name (SPN) authentication via environment variables")
+}
+
+func Execute() {
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+}
+
+func runScanner() {
+	log.SetOutput(os.Stderr) // Send logs to stderr so stdout is clean for data
+	log.Println("Starting Azure VNet Scanner...")
+
+	ctx := context.Background()
+
+	// 1. Get Azure Credentials
+	cred, err := azure.GetCredentials(useServicePrincipal)
+	if err != nil {
+		log.Fatalf("Failed to get Azure credentials: %v", err)
+	}
+	log.Println("Successfully authenticated with Azure.")
+
+	// 2. Initialize Azure clients
+	clients, err := azure.NewClients(cred)
+	if err != nil {
+		log.Fatalf("Failed to create Azure clients: %v", err)
+	}
+
+	// 3. Create and run the scanner
+	scanner := azure.NewScanner(clients)
+	scanOptions := azure.ScanOptions{
+		TargetSubscriptions:   subscriptions,
+		TargetManagementGroup: managementGroup,
+	}
+
+	results, err := scanner.Scan(ctx, scanOptions)
+	if err != nil {
+		log.Fatalf("An error occurred during scanning: %v", err)
+	}
+
+	log.Printf("Scan complete. Found %d VNet address spaces.\n", len(results))
+
+	// 4. Report the results
+	if err := reporter.WriteCSV(os.Stdout, results); err != nil {
+		log.Fatalf("Failed to write results: %v", err)
+	}
+}
+
+internal/azure/auth.go
+This handles the two authentication methods.
+
+// azure-vnet-scanner/internal/azure/auth.go
+package azure
+
+import (
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
+)
+
+// GetCredentials selects the authentication method based on user input.
+// It supports Azure CLI login and Service Principal (via environment variables).
+func GetCredentials(useSPN bool) (azcore.TokenCredential, error) {
+	if useSPN {
+		// This will automatically use AZURE_TENANT_ID, AZURE_CLIENT_ID, and AZURE_CLIENT_SECRET
+		return azidentity.NewEnvironmentCredential(nil)
+	}
+	// This uses the credentials from an `az login` command.
+	return azidentity.NewAzureCLICredential(nil)
+}
+
+
+internal/azure/clients.go
+A small helper to keep all our necessary Azure clients in one place.
+
+// azure-vnet-scanner/internal/azure/clients.go
+package azure
+
+import (
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/managementgroups/armmanagementgroups"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armsubscriptions"
+)
+
+// Clients holds all the necessary Azure SDK clients.
+type Clients struct {
+	cred                   azcore.TokenCredential
+	subsClient             *armsubscriptions.Client
+	mgClient               *armmanagementgroups.Client
+	mgSubscriptionsClient  *armmanagementgroups.SubscriptionsClient
+}
+
+// NewClients creates a new set of Azure clients.
+func NewClients(cred azcore.TokenCredential) (*Clients, error) {
+	subsClient, err := armsubscriptions.NewClient(cred, nil)
+	if err != nil {
+		return nil, err
+	}
+	mgClient, err := armmanagementgroups.NewClient(cred, nil)
+	if err != nil {
+		return nil, err
+	}
+	mgSubscriptionsClient, err := armmanagementgroups.NewSubscriptionsClient(cred, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Clients{
+		cred:                   cred,
+		subsClient:             subsClient,
+		mgClient:               mgClient,
+		mgSubscriptionsClient:  mgSubscriptionsClient,
+	}, nil
+}
+
+// GetVNetClient is a factory method to create a VNet client for a specific subscription.
+func (c *Clients) GetVNetClient(subscriptionID string) (*armnetwork.VirtualNetworksClient, error) {
+	return armnetwork.NewVirtualNetworksClient(subscriptionID, c.cred, nil)
+}
+
+
+
+internal/azure/scanner.go
+This is the heart of the application. It contains the logic to determine which subscriptions to scan, fetches the VNets concurrently, and collects the results.
+
+
+// azure-vnet-scanner/internal/azure/scanner.go
+package azure
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"sync"
+
+	"github.com/your-username/azure-vnet-scanner/internal/calculator"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/managementgroups/armmanagementgroups"
+	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/resources/armsubscriptions"
+	"golang.org/x/sync/errgroup"
+)
+
+// ScanResult holds the data for a single output row.
+type ScanResult struct {
+	SubscriptionName string
+	ManagementGroup  string
+	VNetName         string
+	VNetRegion       string
+	AddressSpace     string
+	AvailableIPs     uint64
+}
+
+// ScanOptions defines the parameters for a scan operation.
+type ScanOptions struct {
+	TargetSubscriptions   []string
+	TargetManagementGroup string
+}
+
+// Scanner orchestrates the scanning of Azure resources.
+type Scanner struct {
+	clients *Clients
+}
+
+// NewScanner creates a new Scanner instance.
+func NewScanner(clients *Clients) *Scanner {
+	return &Scanner{clients: clients}
+}
+
+// Scan starts the scanning process based on the provided options.
+func (s *Scanner) Scan(ctx context.Context, opts ScanOptions) ([]ScanResult, error) {
+	subsToScan, err := s.getSubscriptionsToScan(ctx, opts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to determine subscriptions to scan: %w", err)
+	}
+
+	if len(subsToScan) == 0 {
+		log.Println("No subscriptions found to scan.")
+		return nil, nil
+	}
+
+	log.Printf("Found %d subscriptions to scan. Starting VNet discovery...", len(subsToScan))
+
+	resultsChan := make(chan ScanResult)
+	var wg sync.WaitGroup
+	var g, gCtx = errgroup.WithContext(ctx)
+
+	// Concurrently scan each subscription
+	for _, sub := range subsToScan {
+		// Capture the loop variable
+		currentSub := sub
+		wg.Add(1)
+		g.Go(func() error {
+			defer wg.Done()
+			return s.scanSubscriptionForVNets(gCtx, currentSub, resultsChan)
+		})
+	}
+
+	// A goroutine to close the results channel once all workers are done
+	go func() {
+		wg.Wait()
+		close(resultsChan)
+	}()
+
+	// Collect results
+	var allResults []ScanResult
+	for result := range resultsChan {
+		allResults = append(allResults, result)
+	}
+
+	// Check for errors from the errgroup
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+
+	return allResults, nil
+}
+
+// getSubscriptionsToScan resolves which subscriptions to scan based on the CLI flags.
+func (s *Scanner) getSubscriptionsToScan(ctx context.Context, opts ScanOptions) (map[string]armsubscriptions.Subscription, error) {
+	allSubs, err := s.listAllSubscriptions(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Case 1: Target specific subscriptions
+	if len(opts.TargetSubscriptions) > 0 {
+		return s.filterSubscriptionsByTarget(allSubs, opts.TargetSubscriptions), nil
+	}
+
+	// Case 2: Target a management group
+	if opts.TargetManagementGroup != "" {
+		return s.getSubscriptionsInManagementGroup(ctx, opts.TargetManagementGroup)
+	}
+
+	// Case 3: Default to all subscriptions in the tenant
+	log.Println("No specific target provided. Scanning all accessible subscriptions.")
+	return allSubs, nil
+}
+
+// listAllSubscriptions fetches all subscriptions the user has access to.
+func (s *Scanner) listAllSubscriptions(ctx context.Context) (map[string]armsubscriptions.Subscription, error) {
+	subsMap := make(map[string]armsubscriptions.Subscription)
+	pager := s.clients.subsClient.NewListPager(nil)
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get next page of subscriptions: %w", err)
+		}
+		for _, sub := range page.Value {
+			subsMap[*sub.SubscriptionID] = *sub
+		}
+	}
+	return subsMap, nil
+}
+
+// filterSubscriptionsByTarget finds subscriptions that match a name or ID.
+func (s *Scanner) filterSubscriptionsByTarget(allSubs map[string]armsubscriptions.Subscription, targets []string) map[string]armsubscriptions.Subscription {
+	filtered := make(map[string]armsubscriptions.Subscription)
+	targetSet := make(map[string]bool)
+	for _, t := range targets {
+		targetSet[strings.ToLower(t)] = true
+	}
+
+	for id, sub := range allSubs {
+		if targetSet[strings.ToLower(id)] || targetSet[strings.ToLower(*sub.DisplayName)] {
+			filtered[id] = sub
+		}
+	}
+	return filtered
+}
+
+// getSubscriptionsInManagementGroup recursively finds all subscriptions in an MG and its children.
+func (s *Scanner) getSubscriptionsInManagementGroup(ctx context.Context, mgName string) (map[string]armsubscriptions.Subscription, error) {
+	subsInMg := make(map[string]armsubscriptions.Subscription)
+	
+	// Use a queue for breadth-first search of the MG hierarchy
+	mgQueue := []string{mgName}
+	processedMGs := make(map[string]bool)
+
+	for len(mgQueue) > 0 {
+		currentMgName := mgQueue[0]
+		mgQueue = mgQueue[1:]
+
+		if processedMGs[currentMgName] {
+			continue
+		}
+		processedMGs[currentMgName] = true
+		
+		log.Printf("... searching for subscriptions in Management Group: %s", currentMgName)
+
+		// Get subscriptions in the current MG
+		pager := s.clients.mgSubscriptionsClient.NewGetSubscriptionsUnderManagementGroupPager(currentMgName, nil)
+		for pager.More() {
+			page, err := pager.NextPage(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get subs for MG %s: %w", currentMgName, err)
+			}
+			for _, sub := range page.Value {
+				if sub.ID != nil && sub.DisplayName != nil {
+					// The API gives us a different object, so we need to construct a standard subscription object
+					subIDParts := strings.Split(*sub.ID, "/")
+					subID := subIDParts[len(subIDParts)-1]
+					subsInMg[subID] = armsubscriptions.Subscription{
+						ID:             &subID,
+						SubscriptionID: &subID,
+						DisplayName:    sub.DisplayName,
+					}
+				}
+			}
+		}
+
+		// Get child MGs and add them to the queue
+		childrenPager := s.clients.mgClient.NewGetChildrenPager(currentMgName, nil)
+		for childrenPager.More() {
+			page, err := childrenPager.NextPage(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get children for MG %s: %w", currentMgName, err)
+			}
+			for _, child := range page.Value {
+				if *child.Type == "/providers/Microsoft.Management/managementGroups" {
+					mgQueue = append(mgQueue, *child.Name)
+				}
+			}
+		}
+	}
+	
+	return subsInMg, nil
+}
+
+// scanSubscriptionForVNets scans a single subscription and sends results to the channel.
+func (s *Scanner) scanSubscriptionForVNets(ctx context.Context, sub armsubscriptions.Subscription, resultsChan chan<- ScanResult) error {
+	log.Printf("Scanning subscription: %s (%s)", *sub.DisplayName, *sub.SubscriptionID)
+
+	vnetClient, err := s.clients.GetVNetClient(*sub.SubscriptionID)
+	if err != nil {
+		return fmt.Errorf("failed to create vnet client for sub %s: %w", *sub.DisplayName, err)
+	}
+
+	// This is an extra API call to find the MG. Could be cached for performance.
+	mgName, err := s.getManagementGroupName(ctx, *sub.SubscriptionID)
+	if err != nil {
+		log.Printf("Warning: could not get management group for subscription %s: %v", *sub.DisplayName, err)
+		mgName = "N/A"
+	}
+
+	pager := vnetClient.NewListAllPager(nil)
+	for pager.More() {
+		page, err := pager.NextPage(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to list vnets in sub %s: %w", *sub.DisplayName, err)
+		}
+
+		for _, vnet := range page.Value {
+			if vnet.Properties == nil || vnet.Properties.AddressSpace == nil || vnet.Properties.AddressSpace.AddressPrefixes == nil {
+				continue
+			}
+
+			for _, prefix := range vnet.Properties.AddressSpace.AddressPrefixes {
+				availableIPs, err := calculator.AvailableIPsInCIDR(*prefix)
+				if err != nil {
+					log.Printf("Warning: could not parse CIDR %s for VNet %s: %v", *prefix, *vnet.Name, err)
+					continue
+				}
+
+				resultsChan <- ScanResult{
+					SubscriptionName: *sub.DisplayName,
+					ManagementGroup:  mgName,
+					VNetName:         *vnet.Name,
+					VNetRegion:       *vnet.Location,
+					AddressSpace:     *prefix,
+					AvailableIPs:     availableIPs,
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// getManagementGroupName finds the MG a subscription belongs to.
+func (s *Scanner) getManagementGroupName(ctx context.Context, subID string) (string, error) {
+	// Note: This API requires tenant-level permissions to read management groups.
+	// `Reader` at the tenant root is sufficient.
+	mgInfo, err := s.clients.mgSubscriptionsClient.GetSubscription(ctx, "root", subID, nil)
+	if err != nil {
+		return "", err
+	}
+	if mgInfo.SubscriptionUnderManagementGroup.Parent != nil && mgInfo.SubscriptionUnderManagementGroup.Parent.DisplayName != nil {
+		return *mgInfo.SubscriptionUnderManagementGroup.Parent.DisplayName, nil
+	}
+	return "N/A", nil
+}
+
+
+
+internal/calculator/ip.go
+A simple helper to calculate the number of IPs in a given CIDR block.
+
+// azure-vnet-scanner/internal/calculator/ip.go
+package calculator
+
+import (
+	"fmt"
+	"math"
+	"net"
+)
+
+// AvailableIPsInCIDR calculates the total number of IP addresses in a CIDR block.
+// Note: This does not account for the 5 IPs Azure reserves in each *subnet*.
+// It gives the theoretical total for the *address space*.
+func AvailableIPsInCIDR(cidr string) (uint64, error) {
+	_, ipNet, err := net.ParseCIDR(cidr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid CIDR block: %s", cidr)
+	}
+
+	prefixLen, bits := ipNet.Mask.Size()
+	hostBits := bits - prefixLen
+
+	// Use math.Pow and cast to uint64 for the calculation
+	count := math.Pow(2, float64(hostBits))
+
+	return uint64(count), nil
+}
+
+
+
+internal/reporter/csv.go
+This component handles formatting the final output into CSV format.
+
+// azure-vnet-scanner/internal/reporter/csv.go
+package reporter
+
+import (
+	"encoding/csv"
+	"fmt"
+	"io"
+	"strconv"
+
+	"github.com/your-username/azure-vnet-scanner/internal/azure"
+)
+
+// WriteCSV formats the scan results into a CSV table.
+func WriteCSV(writer io.Writer, results []azure.ScanResult) error {
+	csvWriter := csv.NewWriter(writer)
+	defer csvWriter.Flush()
+
+	// Write header
+	header := []string{
+		"subscription_name",
+		"management_group",
+		"vnet_name",
+		"vnet_region",
+		"address_space",
+		"available_ips",
+	}
+	if err := csvWriter.Write(header); err != nil {
+		return fmt.Errorf("failed to write CSV header: %w", err)
+	}
+
+	// Write rows
+	for _, res := range results {
+		row := []string{
+			res.SubscriptionName,
+			res.ManagementGroup,
+			res.VNetName,
+			res.VNetRegion,
+			res.AddressSpace,
+			strconv.FormatUint(res.AvailableIPs, 10),
+		}
+		if err := csvWriter.Write(row); err != nil {
+			return fmt.Errorf("failed to write CSV row: %w", err)
+		}
+	}
+
+	return csvWriter.Error()
+}
+
+
+
+Step 3: Build and Run
+Build the Binary:
+From the root of your azure-vnet-scanner directory, run:
+
+Bash
+
+go build -o azure-vnet-scanner .
+This will create an executable file named azure-vnet-scanner.
+
+How to Use:
+
+Prerequisites:
+
+Method 1 (Recommended): Log in with the Azure CLI. Your user account must have the Reader role at the tenant root scope (/).
+Bash
+
+az login
+Method 2 (Service Principal): Create a Service Principal with the Reader role at the tenant root scope. Then, set these environment variables:
+Bash
+
+export AZURE_TENANT_ID="your-tenant-id"
+export AZURE_CLIENT_ID="your-spn-app-id"
+export AZURE_CLIENT_SECRET="your-spn-secret"
+Execution Examples:
+
+Scan the entire tenant (default):
+Bash
+
+./azure-vnet-scanner
+Scan a single subscription by name:
+Bash
+
+./azure-vnet-scanner -s "My Dev Subscription"
+Scan multiple subscriptions by ID and name:
+Bash
+
+./azure-vnet-scanner -s "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" -s "My Prod Subscription"
+Scan a Management Group and all its children:
+Bash
+
+./azure-vnet-scanner -m "My-Landing-Zones-MG"
+Scan using a Service Principal:
+Bash
+
+# Make sure env vars are set first
+./azure-vnet-scanner --use-spn
+Save output to a file:
+Bash
+
+./azure-vnet-scanner > vnet_report.csv
+Example Output (vnet_report.csv)
+csv
+
+subscription_name,management_group,vnet_name,vnet_region,address_space,available_ips
+My Dev Subscription,Landing-Zones-MG,dev-vnet-01,eastus,10.1.0.0/16,65536
+My Dev Subscription,Landing-Zones-MG,dev-vnet-01,eastus,192.168.0.0/24,256
+My Prod Subscription,Landing-Zones-MG,prod-vnet-central,centralus,10.100.0.0/16,65536
+Another Subscription,Sandbox-MG,test-vnet-we,westeurope,172.16.0.0/12,1048576
+This output is perfectly formatted for direct import into PostgreSQL or any other database system.
