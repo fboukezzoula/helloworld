@@ -1,3 +1,48 @@
+compute_used_and_avail_for_prefix() {
+  local prefix="$1"; shift
+  local pairs=("$@") # éléments "cidr,used"
+  python3 - "$prefix" "${pairs[@]}" <<'PY'
+import sys, ipaddress
+prefix=sys.argv[1]
+pairs=sys.argv[2:]
+try:
+    net=ipaddress.ip_network(prefix, strict=False)
+except Exception:
+    print("0 0"); sys.exit(0)
+# IPv6: on renvoie 0 0 pour éviter des valeurs énormes (support partiel)
+if net.version==6:
+    print("0 0"); sys.exit(0)
+used_total=0
+avail_total=0
+for p in pairs:
+    try:
+        cidr,used_str=p.split(",",1)
+        used=int(used_str)
+        sn=ipaddress.ip_network(cidr, strict=False)
+    except Exception:
+        continue
+    if sn.version!=net.version or not sn.subnet_of(net):
+        continue
+    reserved=5 if sn.version==4 else 2
+    avail=max(sn.num_addresses - reserved - used, 0)
+    used_total+=used
+    avail_total+=avail
+print(f"{used_total} {avail_total}")
+PY
+}
+
+
+res="$(compute_used_and_avail_for_prefix "$prefix" "${pairs_for_calc[@]}")"
+read -r ips_used ips_avail <<< "$res"
+log DEBUG "  Prefix $prefix -> IPs utilisées: $ips_used, disponibles: $ips_avail"
+echo "\"$mg_name\",\"$sub_id\",\"$sub_name\",\"$vnet_name\",\"$prefix\",\"$nb_subnets\",\"$ips_used\",\"$ips_avail\",\"$location\"" >> "$OUTFILE"
+
+
+
+
+
+
+
 version améliorée de ton script qui calcule “réellement” les IPs disponibles par VNet et par préfixe, en tenant compte:
 
 des IPs réservées par Azure dans chaque subnet (5 en IPv4, 2 en IPv6),
