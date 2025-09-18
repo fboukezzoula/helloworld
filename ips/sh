@@ -1,227 +1,26 @@
-#!/usr/bin/env bash
-# azure-vnet-scan.sh
-# Requirements: az cli (logged in via 'az login' or using SPN), jq, python3
-# Usage examples:
-#   ./azure-vnet-scan.sh -o output.csv
-#   ./azure-vnet-scan.sh -s subId1,subName2 -o out.csv
-#   ./azure-vnet-scan.sh -m MyMgmtGroup -o out.csv
-#   ./azure-vnet-scan.sh -a -o out.csv
-#
-# CSV columns: management group,souscription name,vnet name,adresse space,ips disponibles,région
-set -euo pipefail
+version améliorée de ton script qui calcule “réellement” les IPs disponibles par VNet et par préfixe, en tenant compte:
 
-OUTFILE="vnet-scan.csv"
-SUBS_INPUT=""
-MGROUP=""
-ALL_SUBS=false
+des IPs réservées par Azure dans chaque subnet (5 en IPv4, 2 en IPv6),
+des IPs déjà utilisées par les ressources du réseau (NICs, Load Balancers internes, Application Gateways privés, Azure Firewall, Bastion, Virtual Network Gateways, Private Link Services),
+le tout avec plus de logs et des options de verbosité.
 
-print_help() {
-  cat <<EOF
-Usage: $0 [options]
-Options:
-  -s    Comma-separated subscriptions (id or name)
-  -m    Management group (id or name)
-  -a    Scan all subscriptions accessible
-  -o    Output CSV file (default: $OUTFILE)
-  -h    Help
-EOF
-}
+Points clés:
 
-while getopts "s:m:ao:h" opt; do
-  case $opt in
-    s) SUBS_INPUT="$OPTARG" ;;
-    m) MGROUP="$OPTARG" ;;
-    a) ALL_SUBS=true ;;
-    o) OUTFILE="$OPTARG" ;;
-    h) print_help; exit 0 ;;
-    *) print_help; exit 1 ;;
-  esac
-done
+Le champ “ips disponibles” devient: somme des IPs libres dans les subnets du préfixe = taille(subnet) − réservées(Azure) − IPs allouées.
+On ne “compte” pas l’espace d’adressage non subnetté (non utilisable tel quel).
+IPv4 pris en compte. IPv6 pris en charge pour les réserves (2 IP) mais les usages sont peu fréquents et pas exhaustifs; on peut durcir ensuite si besoin.
+Nouveaux flags: -v (verbose), -d (debug), -q (quiet), -L <fichier log>.
 
-declare -a SUBS_LIST=()
-
-# Resolve subscriptions specified by user
-if [[ -n "$SUBS_INPUT" ]]; then
-  IFS=',' read -r -a tmp <<< "$SUBS_INPUT"
-  for s in "${tmp[@]}"; do
-    if az account show -s "$s" >/dev/null 2>&1; then
-      sid=$(az account show -s "$s" -o tsv --query id)
-      sname=$(az account show -s "$s" -o tsv --query name)
-      SUBS_LIST+=("${sid}::${sname}")
-    else
-      echo "Warning: subscription '$s' not accessible or non trouvée. Ignorée." >&2
-    fi
-  done
-fi
-
-# If management group provided, gather subscriptions recursively
-if [[ -n "$MGROUP" ]]; then
-  mgjson=$(az account management-group show --name "$MGROUP" -e -r -o json 2>/dev/null) || true
-  if [[ -n "$mgjson" ]]; then
-    mapfile -t subs_from_mg < <(echo "$mgjson" | jq -r '.. | objects | select(.type=="Subscription") | "\(.id) :: \(.displayName // .name // "")"' 2>/dev/null || true)
-    for item in "${subs_from_mg[@]}"; do
-      sid=$(echo "$item" | awk -F'::' '{print $1}' | sed 's@.*/subscriptions/@@; s@/@@g')
-      sname=$(echo "$item" | awk -F'::' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-      [[ -n "$sid" ]] && SUBS_LIST+=("${sid}::${sname}")
-    done
-  else
-    echo "Warning: impossible d'interroger le management group '$MGROUP' (droits/nom?)." >&2
-  fi
-fi
-
-# If all-subscriptions requested
-if $ALL_SUBS; then
-  mapfile -t subs_all < <(az account list -o json | jq -r '.[] | "\(.id) :: \(.name)"')
-  for item in "${subs_all[@]}"; do
-    sid=$(echo "$item" | awk -F'::' '{print $1}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    sname=$(echo "$item" | awk -F'::' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    SUBS_LIST+=("${sid}::${sname}")
-  done
-fi
-
-# Default: if none provided, take all accessible subscriptions
-if [[ ${#SUBS_LIST[@]} -eq 0 ]]; then
-  mapfile -t subs_all < <(az account list -o json | jq -r '.[] | "\(.id) :: \(.name)"')
-  for item in "${subs_all[@]}"; do
-    sid=$(echo "$item" | awk -F'::' '{print $1}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    sname=$(echo "$item" | awk -F'::' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    SUBS_LIST+=("${sid}::${sname}")
-  done
-fi
-
-# remove duplicates
-IFS=$'\n' SUBS_LIST=($(printf "%s\n" "${SUBS_LIST[@]}" | awk '!seen[$0]++')) ; unset IFS
-
-if [[ ${#SUBS_LIST[@]} -eq 0 ]]; then
-  echo "Erreur: aucune subscription trouvée ou accessible." >&2
-  exit 3
-fi
-
-# ===== Build subscription -> management group mapping (best-effort) =====
-declare -A SUB_TO_MG
-
-echo "Construction du mapping subscriptions -> management group (best-effort)..." >&2
-# Liste tous les management groups (peut échouer si pas de droits, on continue)
-mapfile -t mgroups_list < <(az account management-group list -o json 2>/dev/null | jq -r '.[].name' 2>/dev/null || true)
-
-for mg in "${mgroups_list[@]}"; do
-  # On tente de lister les subscriptions membres via la commande show (peut varier selon version/permissions)
-  members_json=$(az account management-group show --name "$mg" -e -r -o json 2>/dev/null || echo "[]")
-  # Extraire les subscription ids
-  mapfile -t subs_for_mg < <(echo "$members_json" | jq -r '.. | objects | select(.type=="Subscription") | .id' 2>/dev/null || true)
-  for fullid in "${subs_for_mg[@]}"; do
-    sid=$(echo "$fullid" | sed 's@.*/subscriptions/@@; s@/@@g')
-    [[ -n "$sid" ]] && SUB_TO_MG["$sid"]="$mg"
-  done
-done
-
-# ===== CSV header =====
-echo "management group,souscription name,vnet name,adresse space,ips disponibles,région" > "$OUTFILE"
-
-# compute_available_ips:
-# Pour chaque prefix IPv4: ips_disponibles = total_addresses(prefix) - 5 * number_of_subnets_inside_prefix
-# (Azure réserve 5 adresses par subnet; on compte combien de subnets sont contenus dans le prefix.)
-compute_available_ips() {
-  local prefix="$1"
-  shift
-  local subnets=("$@")   # tableau de préfixes de subnets (ex: 10.0.1.0/24 ...)
-  # Passer au Python pour faire la géométrie CIDR proprement
-  python3 - <<PY
-import ipaddress, sys
-prefix = "$prefix"
-subs = []
-# build subs from bash array
-subs_bash = """$(printf "%s\n" "${subnets[@]}" | sed ':a;N;$!ba;s/\n/|/g')"""
-if subs_bash.strip() != "":
-    subs = subs_bash.split("|")
-try:
-    net = ipaddress.ip_network(prefix, strict=False)
-except Exception:
-    print("0")
-    sys.exit(0)
-
-if net.version != 4:
-    print("0")
-    sys.exit(0)
-
-total = net.num_addresses
-# Count only subnets that are inside this prefix
-count_subnets = 0
-for s in subs:
-    try:
-        sn = ipaddress.ip_network(s.strip(), strict=False)
-    except Exception:
-        continue
-    if sn.subnet_of(net):
-        count_subnets += 1
-
-# Azure reserves 5 addresses per subnet (4 first + last). Compute available usable addresses in the prefix:
-avail = total - 5 * count_subnets
-if avail < 0:
-    avail = 0
-print(str(avail))
-PY
-}
-
-# ===== Main loop: iterate subscriptions & vnets =====
-for sitem in "${SUBS_LIST[@]}"; do
-  sub_id=$(echo "$sitem" | awk -F'::' '{print $1}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-  sub_name=$(echo "$sitem" | awk -F'::' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-  if ! az account set --subscription "$sub_id" >/dev/null 2>&1; then
-    echo "Warning: impossible de sélectionner la subscription $sub_id ($sub_name). Skipping." >&2
-    continue
-  fi
-
-  # Get vnets
-  vnets_json=$(az network vnet list -o json 2>/dev/null || echo "[]")
-  vcount=$(echo "$vnets_json" | jq 'length' 2>/dev/null || echo 0)
-  if [[ "$vcount" -eq 0 ]]; then
-    continue
-  fi
-
-  mg_name="${SUB_TO_MG[$sub_id]:-N/A}"
-
-  for i in $(seq 0 $((vcount-1))); do
-    vnet=$(echo "$vnets_json" | jq -r ".[$i]")
-    vnet_name=$(echo "$vnet" | jq -r '.name')
-    location=$(echo "$vnet" | jq -r '.location')
-    # address prefixes (may be multiple)
-    mapfile -t addr_prefixes < <(echo "$vnet" | jq -r '.addressSpace.addressPrefixes[]? // empty')
-    # collect subnet prefixes
-    mapfile -t subnet_prefixes < <(echo "$vnet" | jq -r '.subnets[]?.addressPrefix? // empty')
-
-    for prefix in "${addr_prefixes[@]}"; do
-      [[ -z "$prefix" ]] && continue
-      # Skip IPv6 for this count
-      if [[ "$prefix" == *:* ]]; then
-        ips_avail=0
-      else
-        ips_avail=$(compute_available_ips "$prefix" "${subnet_prefixes[@]}")
-      fi
-      # write CSV row, échappe les guillemets
-      esc_mg=$(echo "$mg_name" | sed 's/"/""/g')
-      esc_sub=$(echo "$sub_name" | sed 's/"/""/g')
-      esc_vnet=$(echo "$vnet_name" | sed 's/"/""/g')
-      echo "\"$esc_mg\",\"$esc_sub\",\"$esc_vnet\",\"$prefix\",\"$ips_avail\",\"$location\"" >> "$OUTFILE"
-    done
-  done
-done
-
-echo "Scan terminé. Résultats enregistrés dans : $OUTFILE"
-echo "Note: 'ips disponibles' = total_addresses(prefix) - 5 * nombre_de_subnets_dans_ce_prefix (Azure réserve 5 adresses par subnet). IPv6 non compté."
-
-
-*****/
-
+```bash
 #!/usr/bin/env bash
 # azure-vnet-scan.sh
 # Requirements: az cli, jq, python3
 # Usage examples:
-#   ./azure-vnet-scan.sh -a -r "westeurope,francecentral" -o vnets.csv
-#   ./azure-vnet-scan.sh -s subId1,subName2 -o out.csv
+#   ./azure-vnet-scan.sh -a -r "westeurope,francecentral" -o vnets.csv -v
+#   ./azure-vnet-scan.sh -s subId1,subName2 -o out.csv -d -L scan.log
 #   ./azure-vnet-scan.sh -m MyMgmtGroup -r westeurope -o out.csv
 
-set -euo pipefail
+set -eEuo pipefail
 
 OUTFILE="vnet-scan.csv"
 SUBS_INPUT=""
@@ -229,26 +28,59 @@ MGROUP=""
 ALL_SUBS=false
 REGION_FILTERS=()
 
+LOG_LEVEL=1   # 0=ERROR, 1=INFO (par défaut), 2=DEBUG
+LOG_FILE=""
+
 print_help() {
   cat <<EOF
 Usage: $0 [options]
 Options:
-  -s    Comma-separated subscriptions (id or name)
-  -m    Management group (id or name)
-  -a    Scan all subscriptions accessible
-  -r    Region filter (comma-separated, example: "westeurope,francecentral")
-  -o    Output CSV file (default: $OUTFILE)
-  -h    Help
+  -s    Subscriptions (id ou nom) séparées par des virgules
+  -m    Management group (id ou nom)
+  -a    Scanner toutes les subscriptions accessibles
+  -r    Filtre région (ex: "westeurope,francecentral")
+  -o    Fichier CSV de sortie (default: $OUTFILE)
+  -v    Verbose (logs INFO + DEBUG)
+  -d    Debug (équivaut à -v, logs très verbeux)
+  -q    Quiet (seulement erreurs)
+  -L    Fichier log (ex: scan.log)
+  -h    Aide
 EOF
 }
 
-while getopts "s:m:r:ao:h" opt; do
+log() {
+  local level="$1"; shift
+  local msg="$*"
+  local lvl_num=1
+  case "$level" in
+    ERROR) lvl_num=0 ;;
+    WARN)  lvl_num=1 ;;
+    INFO)  lvl_num=1 ;;
+    DEBUG) lvl_num=2 ;;
+    *)     lvl_num=1 ;;
+  esac
+  if (( LOG_LEVEL >= lvl_num )); then
+    if [[ -n "$LOG_FILE" ]]; then
+      printf "%s [%s] %s\n" "$(date '+%F %T')" "$level" "$msg" | tee -a "$LOG_FILE" >&2
+    else
+      printf "%s [%s] %s\n" "$(date '+%F %T')" "$level" "$msg" >&2
+    fi
+  fi
+}
+
+trap 'log ERROR "Erreur à la ligne $LINENO: $BASH_COMMAND (code=$?)"; exit $?' ERR
+
+while getopts "s:m:r:ao:vqdL:h" opt; do
   case $opt in
     s) SUBS_INPUT="$OPTARG" ;;
     m) MGROUP="$OPTARG" ;;
     a) ALL_SUBS=true ;;
     r) IFS=',' read -r -a REGION_FILTERS <<< "$OPTARG" ;;
     o) OUTFILE="$OPTARG" ;;
+    v) LOG_LEVEL=2 ;;
+    d) LOG_LEVEL=2 ;;
+    q) LOG_LEVEL=0 ;;
+    L) LOG_FILE="$OPTARG" ;;
     h) print_help; exit 0 ;;
     *) print_help; exit 1 ;;
   esac
@@ -264,24 +96,32 @@ if [[ -n "$SUBS_INPUT" ]]; then
       sid=$(az account show -s "$s" -o tsv --query id)
       sname=$(az account show -s "$s" -o tsv --query name)
       SUBS_LIST+=("${sid}::${sname}")
+      log DEBUG "Subscription ajoutée via -s: $sname ($sid)"
+    else
+      log WARN "Subscription introuvable ou injoignable: $s"
     fi
   done
 fi
 
 if [[ -n "$MGROUP" ]]; then
+  log INFO "Récupération des subscriptions dans le management group: $MGROUP"
   mgjson=$(az account management-group show --name "$MGROUP" -e -r -o json 2>/dev/null) || true
   if [[ -n "$mgjson" ]]; then
-    mapfile -t subs_from_mg < <(echo "$mgjson" | jq -r '.. | objects | select(.type=="Subscription") | "\(.id) :: \(.displayName // .name // "")"')
+    mapfile -t subs_from_mg < <(echo "$mgjson" | jq -r '.. | objects | select(.type=="Subscription") | "KATEX_INLINE_OPEN.id) :: KATEX_INLINE_OPEN.displayName // .name // "")"')
     for item in "${subs_from_mg[@]}"; do
       sid=$(echo "$item" | awk -F'::' '{print $1}' | sed 's@.*/subscriptions/@@; s@/@@g')
       sname=$(echo "$item" | awk -F'::' '{print $2}')
       SUBS_LIST+=("${sid}::${sname}")
+      log DEBUG "Subscription ajoutée via MG: $sname ($sid)"
     done
+  else
+    log WARN "Aucune subscription renvoyée par le management group '$MGROUP'."
   fi
 fi
 
 if $ALL_SUBS; then
-  mapfile -t subs_all < <(az account list -o json | jq -r '.[] | "\(.id) :: \(.name)"')
+  log INFO "Récupération de toutes les subscriptions accessibles..."
+  mapfile -t subs_all < <(az account list -o json | jq -r '.[] | "KATEX_INLINE_OPEN.id) :: KATEX_INLINE_OPEN.name)"')
   for item in "${subs_all[@]}"; do
     sid=$(echo "$item" | awk -F'::' '{print $1}')
     sname=$(echo "$item" | awk -F'::' '{print $2}')
@@ -290,7 +130,8 @@ if $ALL_SUBS; then
 fi
 
 if [[ ${#SUBS_LIST[@]} -eq 0 ]]; then
-  mapfile -t subs_all < <(az account list -o json | jq -r '.[] | "\(.id) :: \(.name)"')
+  log INFO "Aucune subscription explicitement fournie, on prend toutes les subscriptions accessibles."
+  mapfile -t subs_all < <(az account list -o json | jq -r '.[] | "KATEX_INLINE_OPEN.id) :: KATEX_INLINE_OPEN.name)"')
   for item in "${subs_all[@]}"; do
     sid=$(echo "$item" | awk -F'::' '{print $1}')
     sname=$(echo "$item" | awk -F'::' '{print $2}')
@@ -306,8 +147,11 @@ if [[ ${#SUBS_LIST[@]} -eq 0 ]]; then
   exit 3
 fi
 
+log INFO "Subscriptions à scanner: ${#SUBS_LIST[@]}"
+
 # --- Mapping Subscription -> Management Group ---
 declare -A SUB_TO_MG
+log INFO "Construction du mapping Subscription -> Management Group..."
 mapfile -t mgroups_list < <(az account management-group list -o json 2>/dev/null | jq -r '.[].name' 2>/dev/null || true)
 for mg in "${mgroups_list[@]}"; do
   members_json=$(az account management-group show --name "$mg" -e -r -o json 2>/dev/null || echo "[]")
@@ -321,36 +165,134 @@ done
 # --- Header CSV ---
 echo "management group,subscription id,subscription name,vnet name,adresse space,nb subnets,ips disponibles,région" > "$OUTFILE"
 
-# --- Fonction calcul des IP dispos ---
-compute_available_ips() {
+# --- Fonction: disponible pour un préfixe d'un VNet à partir de la liste des subnets (cidr, used) ---
+compute_avail_for_prefix() {
   local prefix="$1"; shift
-  local subnets=("$@")
-  python3 - "$prefix" "$(printf "%s\n" "${subnets[@]}" | paste -sd'|')" <<'PY'
-import ipaddress, sys
-prefix=sys.argv[1]; subs_arg=sys.argv[2]
-subs=subs_arg.split("|") if subs_arg else []
-try: net=ipaddress.ip_network(prefix, strict=False)
-except: print("0"); sys.exit(0)
-if net.version!=4: print("0"); sys.exit(0)
-total=net.num_addresses
-count_subnets=0
-for s in subs:
-  try: sn=ipaddress.ip_network(s.strip(), strict=False)
-  except: continue
-  if sn.subnet_of(net): count_subnets+=1
-avail=total-5*count_subnets
-print(str(avail if avail>=0 else 0))
+  local pairs=("$@") # éléments "cidr,used"
+  python3 - "$prefix" "${pairs[@]}" <<'PY'
+import sys, ipaddress
+prefix=sys.argv[1]
+pairs=sys.argv[2:]
+try:
+    net=ipaddress.ip_network(prefix, strict=False)
+except Exception:
+    print(0); sys.exit(0)
+avail=0
+for p in pairs:
+    try:
+        cidr,used_str=p.split(",",1)
+        used=int(used_str)
+        sn=ipaddress.ip_network(cidr, strict=False)
+    except Exception:
+        continue
+    if sn.version!=net.version: 
+        continue
+    if not sn.subnet_of(net):
+        continue
+    reserved = 5 if sn.version==4 else 2
+    usable=max(sn.num_addresses - reserved - used, 0)
+    avail+=usable
+print(avail)
 PY
+}
+
+# --- Collecte des usages IP par subnet (IPv4 uniquement pour l'instant) ---
+# Remplit l'associative array USED_COUNT_BY_SUBNET (subnetId -> count)
+build_usage_map() {
+  declare -gA USED_COUNT_BY_SUBNET=()
+  local count nic_cnt lb_cnt appgw_cnt fw_cnt bastion_cnt vngw_cnt pls_cnt
+
+  log INFO "  -> Collecte des usages IP (NICs, LB privés, AppGW privés, Firewall, Bastion, VNet GW, PLS)..."
+
+  # NICs (chaque ipConfiguration consomme 1 IP)
+  mapfile -t nic_subnets < <(az network nic list -o json 2>/dev/null | \
+    jq -r '.[] | .ipConfigurations[]? | select(.subnet.id!=null) | 
+            select((.privateIPAddress? // "") | tostring | contains(":") | not) | .subnet.id')
+  for sid in "${nic_subnets[@]}"; do
+    [[ -z "$sid" ]] && continue
+    (( USED_COUNT_BY_SUBNET["$sid"]+=1 ))
+  done
+  nic_cnt=${#nic_subnets[@]}
+  log DEBUG "    NIC IP configs comptées: $nic_cnt"
+
+  # Load Balancers internes (frontend IP privés)
+  mapfile -t lb_subnets < <(az network lb list -o json 2>/dev/null | \
+    jq -r '.[] | (.frontendIPConfigurations // .frontendIpConfigurations // [])[]? | 
+            select(.subnet.id!=null) | 
+            select((.privateIPAddress? // "") | tostring | contains(":") | not) |
+            .subnet.id')
+  for sid in "${lb_subnets[@]}"; do
+    (( USED_COUNT_BY_SUBNET["$sid"]+=1 ))
+  done
+  lb_cnt=${#lb_subnets[@]}
+  log DEBUG "    LB frontends privés: $lb_cnt"
+
+  # Application Gateways (frontends privés)
+  mapfile -t appgw_subnets < <(az network application-gateway list -o json 2>/dev/null | \
+    jq -r '.[] | (.frontendIPConfigurations // [])[]? | 
+            select(.subnet.id!=null) | 
+            select((.privateIPAddress? // "") | tostring | contains(":") | not) |
+            .subnet.id')
+  for sid in "${appgw_subnets[@]}"; do
+    (( USED_COUNT_BY_SUBNET["$sid"]+=1 ))
+  done
+  appgw_cnt=${#appgw_subnets[@]}
+  log DEBUG "    AppGW frontends privés: $appgw_cnt"
+
+  # Azure Firewall (ipConfigurations privés)
+  mapfile -t fw_subnets < <(az network firewall list -o json 2>/dev/null | \
+    jq -r '.[] | (.ipConfigurations // [])[]? | select(.subnet.id!=null) | .subnet.id')
+  for sid in "${fw_subnets[@]}"; do
+    (( USED_COUNT_BY_SUBNET["$sid"]+=1 ))
+  done
+  fw_cnt=${#fw_subnets[@]}
+  log DEBUG "    Azure Firewall IP configs: $fw_cnt"
+
+  # Bastion
+  mapfile -t bastion_subnets < <(az network bastion list -o json 2>/dev/null | \
+    jq -r '.[] | (.ipConfigurations // [])[]? | select(.subnet.id!=null) | .subnet.id')
+  for sid in "${bastion_subnets[@]}"; do
+    (( USED_COUNT_BY_SUBNET["$sid"]+=1 ))
+  done
+  bastion_cnt=${#bastion_subnets[@]}
+  log DEBUG "    Bastion IP configs: $bastion_cnt"
+
+  # VNet Gateway (VPN/ER)
+  mapfile -t vngw_subnets < <(az network vnet-gateway list -o json 2>/dev/null | \
+    jq -r '.[] | (.ipConfigurations // [])[]? | select(.subnet.id!=null) | .subnet.id')
+  for sid in "${vngw_subnets[@]}"; do
+    (( USED_COUNT_BY_SUBNET["$sid"]+=1 ))
+  done
+  vngw_cnt=${#vngw_subnets[@]}
+  log DEBUG "    VNet Gateway IP configs: $vngw_cnt"
+
+  # Private Link Service
+  mapfile -t pls_subnets < <(az network private-link-service list -o json 2>/dev/null | \
+    jq -r '.[] | (.ipConfigurations // [])[]? | select(.subnet.id!=null) | .subnet.id')
+  for sid in "${pls_subnets[@]}"; do
+    (( USED_COUNT_BY_SUBNET["$sid"]+=1 ))
+  done
+  pls_cnt=${#pls_subnets[@]}
+  log DEBUG "    Private Link Service IP configs: $pls_cnt"
+
+  local total=0
+  for v in "${USED_COUNT_BY_SUBNET[@]-}"; do total=$((total + v)); done
+  log INFO "  -> Usages IP agrégés (approx. IPv4): $total"
 }
 
 # --- Loop sur les subscriptions ---
 for sitem in "${SUBS_LIST[@]}"; do
   sub_id=$(echo "$sitem" | awk -F'::' '{print $1}')
   sub_name=$(echo "$sitem" | awk -F'::' '{print $2}')
-  az account set --subscription "$sub_id" >/dev/null 2>&1 || continue
+  log INFO "==== Subscription: $sub_name ($sub_id) ===="
+  az account set --subscription "$sub_id" >/dev/null 2>&1 || { log ERROR "Impossible de se positionner sur $sub_id"; continue; }
+
+  # Build usage map once per subscription
+  build_usage_map
 
   vnets_json=$(az network vnet list -o json 2>/dev/null || echo "[]")
   vcount=$(echo "$vnets_json" | jq 'length')
+  log INFO "VNets trouvés: $vcount"
   [[ "$vcount" -eq 0 ]] && continue
 
   mg_name="${SUB_TO_MG[$sub_id]:-N/A}"
@@ -359,34 +301,79 @@ for sitem in "${SUBS_LIST[@]}"; do
     vnet=$(echo "$vnets_json" | jq ".[$i]")
     vnet_name=$(echo "$vnet" | jq -r '.name')
     location=$(echo "$vnet" | jq -r '.location')
+    nb_subnets=$(echo "$vnet" | jq -r '(.subnets | length) // 0')
 
-    # --- Filtre par régions ---
+    # Filtre par régions
     if [[ ${#REGION_FILTERS[@]} -gt 0 ]]; then
       match=false
       for r in "${REGION_FILTERS[@]}"; do
-        if [[ "$location" == "$r" ]]; then
-          match=true
-          break
-        fi
+        if [[ "$location" == "$r" ]]; then match=true; break; fi
       done
-      $match || continue
+      $match || { log DEBUG "Skip VNet $vnet_name ($location) hors filtre"; continue; }
     fi
 
-    mapfile -t addr_prefixes < <(echo "$vnet" | jq -r '.addressSpace.addressPrefixes[]?')
-    mapfile -t subnet_prefixes < <(echo "$vnet" | jq -r '.subnets[]?.addressPrefix? // empty')
+    # Adress spaces du VNet
+    mapfile -t addr_prefixes < <(echo "$vnet" | jq -r '.addressSpace.addressPrefixes[]? // empty')
+    # Paires subnetID|CIDR (supporte addressPrefix et addressPrefixes)
+    mapfile -t subnet_pairs < <(echo "$vnet" | jq -r '
+      .subnets[]? 
+      | .id as $sid
+      | ( (.addressPrefixes? // [ .addressPrefix ]) // [] )[]?
+      | "KATEX_INLINE_OPEN$sid)|KATEX_INLINE_OPEN.)"
+    ')
 
-    nb_subnets=${#subnet_prefixes[@]}
+    # Prépare liste "cidr,used"
+    pairs_for_calc=()
+    for pair in "${subnet_pairs[@]}"; do
+      sid="${pair%%|*}"
+      cidr="${pair#*|}"
+      used="${USED_COUNT_BY_SUBNET["$sid"]:-0}"
+      pairs_for_calc+=("${cidr},${used}")
+    done
+
+    log DEBUG "VNet: $vnet_name, region: $location, subnets: $nb_subnets, addrSpaces: ${#addr_prefixes[@]}"
 
     for prefix in "${addr_prefixes[@]}"; do
       [[ -z "$prefix" ]] && continue
+      # IPv6: support partiel (réserves=2), usages rarement comptés
+      ips_avail=0
       if [[ "$prefix" == *:* ]]; then
-        ips_avail=0
+        ips_avail=$(compute_avail_for_prefix "$prefix" "${pairs_for_calc[@]}")
       else
-        ips_avail=$(compute_available_ips "$prefix" "${subnet_prefixes[@]}")
+        ips_avail=$(compute_avail_for_prefix "$prefix" "${pairs_for_calc[@]}")
       fi
+      log DEBUG "  Prefix $prefix -> IPs disponibles: $ips_avail"
       echo "\"$mg_name\",\"$sub_id\",\"$sub_name\",\"$vnet_name\",\"$prefix\",\"$nb_subnets\",\"$ips_avail\",\"$location\"" >> "$OUTFILE"
     done
   done
 done
 
 echo "✅ Scan terminé. Résultats enregistrés dans : $OUTFILE"
+```
+Ce que le script calcule exactement:
+
+Par subscription:
+Recense les IPs consommées par subnet (approx. IPv4) via:
+NICs (toutes ipConfigurations),
+Load Balancer internes (frontend IP privés),
+Application Gateway (frontend privé),
+Azure Firewall,
+Bastion,
+Virtual Network Gateway,
+Private Link Service.
+Pour chaque VNet et pour chaque préfixe d’espace d’adresses:
+Ne retient que les subnets inclus dans ce préfixe,
+Pour chaque subnet: IP libres = taille(subnet) − réservées(Azure) − IPs allouées,
+Additionne le tout pour remplir “ips disponibles”.
+Notes et limites:
+
+IPv4: OK. IPv6: réserves prises en compte (2), mais certaines consommations IPv6 peuvent ne pas être comptées (peu courant). On peut étendre le filtrage par version IP si nécessaire.
+Des services “gérés” particuliers (ex: App Service Environment) consomment des IPs mais ne sont pas tous comptabilisés explicitement. Beaucoup passent par des NICs et seront donc couverts, mais pas tous. Dis-moi si tu veux que j’ajoute des ressources précises.
+Le champ “nb subnets” est le nombre total de subnets du VNet (pas par préfixe), comme dans ton script d’origine.
+Exemples:
+
+Scanner 2 régions, avec logs DEBUG et fichier log:
+./azure-vnet-scan.sh -a -r "westeurope,francecentral" -o vnets.csv -d -L scan.log
+Scanner un management group:
+./azure-vnet-scan.sh -m MyMgmtGroup -o out.csv -v
+
