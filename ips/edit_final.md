@@ -1,4 +1,4 @@
-```
+```python
 # Compute used/avail AND the number of subnets within an address space
 compute_used_and_avail_for_prefix() {
   local prefix="$1"; shift
@@ -54,7 +54,7 @@ PY
 }
 ```
 
-```
+```python
 # Build "sid|||cidr|||used" per subnet prefix
 mapfile -t pairs_for_calc < <(
   echo "$subnets_json" | jq -r '
@@ -68,7 +68,7 @@ mapfile -t pairs_for_calc < <(
 )
 ```
 
-```
+```python
 res="$(compute_used_and_avail_for_prefix "$prefix" "${pairs_for_calc[@]}")"
 read -r ips_used ips_avail subnets_in_space <<< "$res"
 log DEBUG "  Prefix $prefix -> Subnets: $subnets_in_space, IPs used: $ips_used, available: $ips_avail"
