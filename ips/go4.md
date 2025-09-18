@@ -1,4 +1,3 @@
-go get -u github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/managementgroups/armmanagementgroups
 // azure-vnet-scanner/internal/azure/scanner.go
 package azure
 
@@ -243,4 +242,28 @@ func (s *Scanner) scanSubscriptionForVNets(ctx context.Context, sub armsubscript
 			return fmt.Errorf("failed to list vnets in sub %s: %w", *sub.DisplayName, err)
 		}
 
-		for _, vnet := range page.Value 
+		for _, vnet := range page.Value {
+			if vnet.Properties == nil || vnet.Properties.AddressSpace == nil || vnet.Properties.AddressSpace.AddressPrefixes == nil {
+				continue
+			}
+
+			for _, prefix := range vnet.Properties.AddressSpace.AddressPrefixes {
+				availableIPs, err := calculator.AvailableIPsInCIDR(*prefix)
+				if err != nil {
+					log.Printf("Warning: could not parse CIDR %s for VNet %s: %v", *prefix, *vnet.Name, err)
+					continue
+				}
+
+				resultsChan <- ScanResult{
+					SubscriptionName: *sub.DisplayName,
+					ManagementGroup:  mgName,
+					VNetName:         *vnet.Name,
+					VNetRegion:       *vnet.Location,
+					AddressSpace:     *prefix,
+					AvailableIPs:     availableIPs,
+				}
+			}
+		}
+	}
+	return nil
+}
