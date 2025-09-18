@@ -124,3 +124,24 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+Instructions
+
+Crée le custom field dans NetBox (UI: Admin > Extras > Custom Fields):
+name: list_available_ips
+type: Text
+content types: IPAM > Prefix
+Installe la lib:
+pip install pynetbox
+Variables d’environnement:
+export NETBOX_URL="https://ton-netbox"
+export NETBOX_TOKEN="xxxxxxxxxxxxxxxx"
+Test (dry-run):
+python3 update_list_available_ips.py out.csv --dry-run
+Mise à jour:
+python3 update_list_available_ips.py out.csv
+Optionnel si tu veux éviter les cas ambigus (même prefix dans plusieurs VRFs):
+python3 update_list_available_ips.py out.csv --strict-unique
