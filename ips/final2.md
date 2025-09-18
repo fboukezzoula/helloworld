@@ -252,6 +252,29 @@ echo "management group,subscription id,subscription name,vnet name,adresse space
 New (English):
 echo "management group,subscription id,subscription name,vnet name,address space,subnets,ips used,ips available,region" > "$OUTFILE"
 
+Quick cheatsheet for tomorrow
+
+Run the scan (fast, skip MG) and update NetBox:
+NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=xxxx
+SKIP_MG=1 AZ_TIMEOUT=30
+./azure-vnet-scan.sh -a -o out.csv -v
+python3 update_list_available_ips.py out.csv
+
+With custom thresholds (example: 🟢 ≥ 70, 🟠 ≥ 40):
+NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=xxxx
+python3 update_list_available_ips.py out.csv --green-th 70 --orange-th 40
+
+Optional log file:
+./azure-vnet-scan.sh -a -o out.csv -v -L scan.log
+
+Nightly cron (03:15 every day):
+crontab -e
+15 3 * * * cd /path/to/your/tools &&
+NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=xxxx
+SKIP_MG=1 AZ_TIMEOUT=30
+./azure-vnet-scan.sh -a -o out.csv -q -L scan.log &&
+/usr/bin/python3 update_list_available_ips.py out.csv >> netbox-update.log 2>&1
+
 Note: The updater script accepts both English and French headers, so you can switch whenever you want.
 
 
