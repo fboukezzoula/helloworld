@@ -1,3 +1,326 @@
+# --- Build usage map pour CE VNet uniquement ---
+declare -A USED_COUNT_BY_SUBNET=()
+
+# Trouver le RG du VNet
+rg=$(echo "$vnet" | jq -r '.resourceGroup // ( .id | capture("/resourceGroups/(?<rg>[^/]+)") | .rg )')
+
+# Subnets du VNet (source de vérité pour les CIDR et ipConfigurations)
+subnets_json=$(az network vnet subnet list -g "$rg" --vnet-name "$vnet_name" -o json 2>/dev/null || echo "[]")
+
+# Init: used = nombre d'ipConfigurations dans chaque subnet (NIC + Private Endpoint…)
+while IFS=$'\t' read -r sid ipconfs; do
+  [[ -n "$sid" ]] || continue
+  USED_COUNT_BY_SUBNET["$sid"]=$(( ipconfs ))
+done < <(echo "$subnets_json" | jq -r '.[] | [.id, ((.ipConfigurations | length) // 0)] | @tsv')
+
+# Liste des subnetIds de CE VNet (pour filtrer les ressources)
+subnet_ids_of_vnet=$(echo "$subnets_json" | jq -r '.[].id')
+
+is_subnet_of_vnet() {
+  local id="$1"
+  grep -Fqx -- "$id" <<< "$subnet_ids_of_vnet"
+}
+inc_used() {
+  local sid="$1"
+  local cur="${USED_COUNT_BY_SUBNET["$sid"]:-0}"
+  USED_COUNT_BY_SUBNET["$sid"]=$((cur + 1))
+}
+
+# LB frontends privés
+while read -r sid; do
+  [[ -z "$sid" ]] && continue
+  is_subnet_of_vnet "$sid" && inc_used "$sid"
+done < <(az network lb list -o json 2>/dev/null | jq -r '
+  .[] | (.frontendIPConfigurations // .frontendIpConfigurations // [])[]? |
+  select(.subnet.id!=null) |
+  select((.privateIPAddress? // "") | tostring | contains(":") | not) |
+  .subnet.id')
+
+# AppGW frontends privés
+while read -r sid; do
+  [[ -z "$sid" ]] && continue
+  is_subnet_of_vnet "$sid" && inc_used "$sid"
+done < <(az network application-gateway list -o json 2>/dev/null | jq -r '
+  .[] | (.frontendIPConfigurations // [])[]? |
+  select(.subnet.id!=null) |
+  select((.privateIPAddress? // "") | tostring | contains(":") | not) |
+  .subnet.id')
+
+# Azure Firewall (via az resource)
+while read -r sid; do
+  [[ -z "$sid" ]] && continue
+  is_subnet_of_vnet "$sid" && inc_used "$sid"
+done < <(az resource list --resource-type Microsoft.Network/azureFirewalls -o json 2>/dev/null | jq -r '
+  .[] | (.properties.ipConfigurations // [])[]? |
+  select((.properties.privateIPAddress // "") | tostring | contains(":") | not) |
+  .properties.subnet.id? // empty')
+
+# Bastion (via az resource)
+while read -r sid; do
+  [[ -z "$sid" ]] && continue
+  is_subnet_of_vnet "$sid" && inc_used "$sid"
+done < <(az resource list --resource-type Microsoft.Network/bastionHosts -o json 2>/dev/null | jq -r '
+  .[] | (.properties.ipConfigurations // [])[]? |
+  .properties.subnet.id? // empty')
+
+# VNet Gateway (via az resource)
+while read -r sid; do
+  [[ -z "$sid" ]] && continue
+  is_subnet_of_vnet "$sid" && inc_used "$sid"
+done < <(az resource list --resource-type Microsoft.Network/virtualNetworkGateways -o json 2>/dev/null | jq -r '
+  .[] | (.properties.ipConfigurations // [])[]? |
+  .properties.subnet.id? // empty')
+
+# Private Link Service
+while read -r sid; do
+  [[ -z "$sid" ]] && continue
+  is_subnet_of_vnet "$sid" && inc_used "$sid"
+done < <(az network private-link-service list -o json 2>/dev/null | jq -r '
+  .[] | (.ipConfigurations // [])[]? |
+  .subnet.id? // empty')
+
+# Paires "cidr,used" à partir des subnets du VNet (supporte addressPrefix et addressPrefixes)
+mapfile -t pairs_for_calc < <(echo "$subnets_json" | jq -r '
+  .[] | .id as $sid | ( (.addressPrefixes? // [ .addressPrefix ])[]? ) | "KATEX_INLINE_OPEN$sid)|KATEX_INLINE_OPEN.)"
+' | while IFS='|' read -r sid cidr; do
+  used="${USED_COUNT_BY_SUBNET["$sid"]:-0}"
+  printf "%s,%s\n" "$cidr" "$used"
+done)
+
+# DEBUG: visualiser
+if (( LOG_LEVEL >= 2 )); then
+  log DEBUG "  Subnets dans $vnet_name:"
+  echo "$subnets_json" | jq -r '.[] | "KATEX_INLINE_OPEN.name)\tKATEX_INLINE_OPEN.addressPrefix // (.addressPrefixes|join("|")))\tused=KATEX_INLINE_OPEN(.ipConfigurations|length)//0)"' | sed 's/^/    /'
+  log DEBUG "  USED_COUNT_BY_SUBNET:"
+  while read -r sid; do
+    log DEBUG "    $sid -> ${USED_COUNT_BY_SUBNET["$sid"]:-0}"
+  done <<< "$subnet_ids_of_vnet"
+fi
+
+
+
+res="$(compute_used_and_avail_for_prefix "$prefix" "${pairs_for_calc[@]}")"
+read -r ips_used ips_avail <<< "$res"
+log DEBUG "  Préfix $prefix -> IPs utilisées: $ips_used, disponibles: $ips_avail"
+echo "\"$mg_name\",\"$sub_id\",\"$sub_name\",\"$vnet_name\",\"$prefix\",\"$nb_subnets\",\"$ips_used\",\"$ips_avail\",\"$location\"" >> "$OUTFILE"
+
+
+
+
+
+
+
+# --- Build usage map pour CE VNet uniquement ---
+declare -A USED_COUNT_BY_SUBNET=()
+
+# On récupère le RG du VNet
+rg=$(echo "$vnet" | jq -r '.resourceGroup // ( .id | capture("/resourceGroups/(?<rg>[^/]+)") | .rg )')
+
+# Subnets du VNet (avec ipConfigurations comptées par Azure)
+subnets_json=$(az network vnet subnet list -g "$rg" --vnet-name "$vnet_name" -o json 2>/dev/null || echo "[]")
+
+# Init compteur "used" avec le nombre d'ipConfigurations par subnet (NIC + PE)
+while IFS=$'\t' read -r sid ipconfs; do
+  [[ -z "$sid" ]] && continue
+  USED_COUNT_BY_SUBNET["$sid"]=$(( ipconfs ))
+done < <(echo "$subnets_json" | jq -r '.[] | [.id, ((.ipConfigurations | length) // 0)] | @tsv')
+
+# Construire un set (lookup) des subnetIds de ce VNet pour filtrer les ressources
+subnet_ids_pattern=$(echo "$subnets_json" | jq -r '.[].id' | sed 's/[].*[]/\\&/g')
+# fonction de test bash: is_subnet_of_vnet "$id"
+is_subnet_of_vnet() {
+  local id="$1"
+  grep -Fqx -- "$id" <<< "$subnet_ids_pattern"
+}
+
+# Helper: incrément sûr (pas d'erreur si clé absente)
+inc_used() {
+  local sid="$1"
+  local cur="${USED_COUNT_BY_SUBNET["$sid"]:-0}"
+  USED_COUNT_BY_SUBNET["$sid"]=$((cur + 1))
+}
+
+# LB privés (frontends)
+while read -r sid; do
+  [[ -z "$sid" ]] && continue
+  if is_subnet_of_vnet "$sid"; then inc_used "$sid"; fi
+done < <(az network lb list -o json 2>/dev/null | jq -r '
+  .[] | (.frontendIPConfigurations // .frontendIpConfigurations // [])[]? |
+  select(.subnet.id!=null) |
+  select((.privateIPAddress? // "") | tostring | contains(":") | not) |
+  .subnet.id')
+
+# AppGW privés
+while read -r sid; do
+  [[ -z "$sid" ]] && continue
+  if is_subnet_of_vnet "$sid"; then inc_used "$sid"; fi
+done < <(az network application-gateway list -o json 2>/dev/null | jq -r '
+  .[] | (.frontendIPConfigurations // [])[]? |
+  select(.subnet.id!=null) |
+  select((.privateIPAddress? // "") | tostring | contains(":") | not) |
+  .subnet.id')
+
+# Azure Firewall (via az resource, pas d’extension)
+while read -r sid; do
+  [[ -z "$sid" ]] && continue
+  if is_subnet_of_vnet "$sid"; then inc_used "$sid"; fi
+done < <(az resource list --resource-type Microsoft.Network/azureFirewalls -o json 2>/dev/null | jq -r '
+  .[] | (.properties.ipConfigurations // [])[]? |
+  select((.properties.privateIPAddress // "") | tostring | contains(":") | not) |
+  .properties.subnet.id? // empty')
+
+# Bastion (via az resource)
+while read -r sid; do
+  [[ -z "$sid" ]] && continue
+  if is_subnet_of_vnet "$sid"; then inc_used "$sid"; fi
+done < <(az resource list --resource-type Microsoft.Network/bastionHosts -o json 2>/dev/null | jq -r '
+  .[] | (.properties.ipConfigurations // [])[]? |
+  .properties.subnet.id? // empty')
+
+# VNet Gateway (via az resource)
+while read -r sid; do
+  [[ -z "$sid" ]] && continue
+  if is_subnet_of_vnet "$sid"; then inc_used "$sid"; fi
+done < <(az resource list --resource-type Microsoft.Network/virtualNetworkGateways -o json 2>/dev/null | jq -r '
+  .[] | (.properties.ipConfigurations // [])[]? |
+  .properties.subnet.id? // empty')
+
+# Private Link Service (backend privés)
+while read -r sid; do
+  [[ -z "$sid" ]] && continue
+  if is_subnet_of_vnet "$sid"; then inc_used "$sid"; fi
+done < <(az network private-link-service list -o json 2>/dev/null | jq -r '
+  .[] | (.ipConfigurations // [])[]? |
+  .subnet.id? // empty')
+
+# DEBUG: visualiser ce que l’on va utiliser
+if (( LOG_LEVEL >= 2 )); then
+  log DEBUG "  USED_COUNT_BY_SUBNET (VNet-local):"
+  for sid in $(echo "$subnets_json" | jq -r '.[].id'); do
+    log DEBUG "    $sid -> ${USED_COUNT_BY_SUBNET["$sid"]:-0}"
+  done
+fi
+
+
+A. Patch de debug (à ajouter dans la boucle VNet)
+Place ce bloc juste après la construction de pairs_for_calc et avant le calcul Python:
+# DEBUG: dump des subnets et counts utilisés
+if (( LOG_LEVEL >= 2 )); then
+  log DEBUG "  Subnets dans le VNet $vnet_name ($location):"
+  for pair in "${subnet_pairs[@]}"; do
+    sid="${pair%%|*}"
+    cidr="${pair#*|}"
+    used="${USED_COUNT_BY_SUBNET["$sid"]:-0}"
+    log DEBUG "    - $cidr | subnetId=$sid | used=$used"
+  done
+fi
+
+
+
+
+
+
+# --- Build usage map pour CE VNet uniquement ---
+declare -A USED_COUNT_BY_SUBNET=()
+
+# On récupère le RG du VNet
+rg=$(echo "$vnet" | jq -r '.resourceGroup // ( .id | capture("/resourceGroups/(?<rg>[^/]+)") | .rg )')
+
+# Subnets du VNet (avec ipConfigurations comptées par Azure)
+subnets_json=$(az network vnet subnet list -g "$rg" --vnet-name "$vnet_name" -o json 2>/dev/null || echo "[]")
+
+# Init compteur "used" avec le nombre d'ipConfigurations par subnet (NIC + PE)
+while IFS=$'\t' read -r sid ipconfs; do
+  [[ -z "$sid" ]] && continue
+  USED_COUNT_BY_SUBNET["$sid"]=$(( ipconfs ))
+done < <(echo "$subnets_json" | jq -r '.[] | [.id, ((.ipConfigurations | length) // 0)] | @tsv')
+
+# Construire un set (lookup) des subnetIds de ce VNet pour filtrer les ressources
+subnet_ids_pattern=$(echo "$subnets_json" | jq -r '.[].id' | sed 's/[].*[]/\\&/g')
+# fonction de test bash: is_subnet_of_vnet "$id"
+is_subnet_of_vnet() {
+  local id="$1"
+  grep -Fqx -- "$id" <<< "$subnet_ids_pattern"
+}
+
+# Helper: incrément sûr (pas d'erreur si clé absente)
+inc_used() {
+  local sid="$1"
+  local cur="${USED_COUNT_BY_SUBNET["$sid"]:-0}"
+  USED_COUNT_BY_SUBNET["$sid"]=$((cur + 1))
+}
+
+# LB privés (frontends)
+while read -r sid; do
+  [[ -z "$sid" ]] && continue
+  if is_subnet_of_vnet "$sid"; then inc_used "$sid"; fi
+done < <(az network lb list -o json 2>/dev/null | jq -r '
+  .[] | (.frontendIPConfigurations // .frontendIpConfigurations // [])[]? |
+  select(.subnet.id!=null) |
+  select((.privateIPAddress? // "") | tostring | contains(":") | not) |
+  .subnet.id')
+
+# AppGW privés
+while read -r sid; do
+  [[ -z "$sid" ]] && continue
+  if is_subnet_of_vnet "$sid"; then inc_used "$sid"; fi
+done < <(az network application-gateway list -o json 2>/dev/null | jq -r '
+  .[] | (.frontendIPConfigurations // [])[]? |
+  select(.subnet.id!=null) |
+  select((.privateIPAddress? // "") | tostring | contains(":") | not) |
+  .subnet.id')
+
+# Azure Firewall (via az resource, pas d’extension)
+while read -r sid; do
+  [[ -z "$sid" ]] && continue
+  if is_subnet_of_vnet "$sid"; then inc_used "$sid"; fi
+done < <(az resource list --resource-type Microsoft.Network/azureFirewalls -o json 2>/dev/null | jq -r '
+  .[] | (.properties.ipConfigurations // [])[]? |
+  select((.properties.privateIPAddress // "") | tostring | contains(":") | not) |
+  .properties.subnet.id? // empty')
+
+# Bastion (via az resource)
+while read -r sid; do
+  [[ -z "$sid" ]] && continue
+  if is_subnet_of_vnet "$sid"; then inc_used "$sid"; fi
+done < <(az resource list --resource-type Microsoft.Network/bastionHosts -o json 2>/dev/null | jq -r '
+  .[] | (.properties.ipConfigurations // [])[]? |
+  .properties.subnet.id? // empty')
+
+# VNet Gateway (via az resource)
+while read -r sid; do
+  [[ -z "$sid" ]] && continue
+  if is_subnet_of_vnet "$sid"; then inc_used "$sid"; fi
+done < <(az resource list --resource-type Microsoft.Network/virtualNetworkGateways -o json 2>/dev/null | jq -r '
+  .[] | (.properties.ipConfigurations // [])[]? |
+  .properties.subnet.id? // empty')
+
+# Private Link Service (backend privés)
+while read -r sid; do
+  [[ -z "$sid" ]] && continue
+  if is_subnet_of_vnet "$sid"; then inc_used "$sid"; fi
+done < <(az network private-link-service list -o json 2>/dev/null | jq -r '
+  .[] | (.ipConfigurations // [])[]? |
+  .subnet.id? // empty')
+
+# DEBUG: visualiser ce que l’on va utiliser
+if (( LOG_LEVEL >= 2 )); then
+  log DEBUG "  USED_COUNT_BY_SUBNET (VNet-local):"
+  for sid in $(echo "$subnets_json" | jq -r '.[].id'); do
+    log DEBUG "    $sid -> ${USED_COUNT_BY_SUBNET["$sid"]:-0}"
+  done
+fi
+
+
+
+
+
+
+
+********
+
+
+
 # VNet Gateway (VPN/ER) — sans RG via az resource list
 AZ_TIMEOUT="${AZ_TIMEOUT:-30}"
 
