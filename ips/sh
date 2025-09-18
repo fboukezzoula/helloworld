@@ -1,25 +1,35 @@
-# VNet Gateway via az resource (forme stable)
+# VNet Gateway (VPN/ER) — sans RG via az resource list
+AZ_TIMEOUT="${AZ_TIMEOUT:-30}"
+
+# Récupère les gateways au niveau subscription (pas besoin de --resource-group)
 if command -v timeout >/dev/null 2>&1; then
-  mapfile -t vngw_subnets < <(
-    timeout "${AZ_TIMEOUT:-30}s" az resource list --resource-type Microsoft.Network/virtualNetworkGateways -o json 2>/dev/null |
-    jq -r '.[] 
-      | (.properties.ipConfigurations // [])[]? 
-      | (.properties.subnet.id // .subnet.id // empty)'
-  )
+  vngw_json="$(timeout "${AZ_TIMEOUT}s" az resource list \
+    --resource-type Microsoft.Network/virtualNetworkGateways -o json 2>/dev/null || echo "[]")"
 else
-  mapfile -t vngw_subnets < <(
-    az resource list --resource-type Microsoft.Network/virtualNetworkGateways -o json 2>/dev/null |
-    jq -r '.[] 
-      | (.properties.ipConfigurations // [])[]? 
-      | (.properties.subnet.id // .subnet.id // empty)'
-  )
+  vngw_json="$(az resource list \
+    --resource-type Microsoft.Network/virtualNetworkGateways -o json 2>/dev/null || echo "[]")"
+  log WARN "'timeout' non trouvé (sudo dnf install -y coreutils)."
 fi
+
+# Extrait les subnets utilisés par les ipConfigurations du gateway
+mapfile -t vngw_subnets < <(echo "$vngw_json" | jq -r '
+  .[] 
+  | (.properties.ipConfigurations // [])[]? 
+  | .properties.subnet.id? // empty
+')
+
 for sid in "${vngw_subnets[@]}"; do
   [[ -z "$sid" ]] && continue
   (( USED_COUNT_BY_SUBNET["$sid"]+=1 ))
 done
 vngw_cnt=${#vngw_subnets[@]}
 log DEBUG "    VNet Gateway IP configs: $vngw_cnt"
+
+
+
+
+az resource list --resource-type Microsoft.Network/virtualNetworkGateways -o json | jq -r '
+.[] | (.properties.ipConfigurations // [])[]? | .properties.subnet.id? // empty
 
 
 
