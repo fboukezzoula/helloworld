@@ -1,0 +1,34 @@
+{
+  "properties": {
+    "displayName": "Empêcher la suppression du Resource Group core-network",
+    "policyType": "Custom",
+    "mode": "All",
+    "description": "Cette policy empêche la suppression du Resource Group core-network.",
+    "metadata": {
+      "version": "1.0.0",
+      "category": "Resource Groups"
+    },
+    "parameters": {},
+    "policyRule": {
+      "if": {
+        "allOf": [
+          {
+            "field": "type",
+            "equals": "Microsoft.Resources/subscriptions/resourceGroups"
+          },
+          {
+            "field": "name",
+            "equals": "core-network"
+          },
+          {
+            "field": "Microsoft.Resources/subscriptions/resourceGroups/deletionTime",
+            "exists": "true"
+          }
+        ]
+      },
+      "then": {
+        "effect": "deny"
+      }
+    }
+  }
+}
