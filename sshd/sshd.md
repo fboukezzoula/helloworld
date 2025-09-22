@@ -251,3 +251,58 @@ tu as un code-server full web, qui sait sortir via proxy (px)
 tu peux dépanner via Remote-SSH
 
 tu peux faire az login et bosser avec Azure CLI/Terraform/etc.
+
+
+
+
+
+
+
+
+
+✅ Vérifications à faire
+
+Inspecter le PAC (si tu l’as monté dans le Pod via ConfigMap) :
+
+cat /config/proxy.pac
+
+
+Vérifie que les retours de fonction FindProxyForURL() donnent bien des chaînes valides, du type :
+
+PROXY proxy.company.com:8080
+
+DIRECT
+
+⚠️ Pas de /// ou d’URL complètes dans la partie PROXY.
+
+Tester manuellement avec px
+Tu peux lancer px en mode debug :
+
+px --pac /config/proxy.pac --user "$PX_USER" --password "$PX_PASSWORD" --listen 0.0.0.0:3128 --debug
+
+
+Ça te montrera exactement ce que px lit du PAC et tente de parser.
+
+Si le PAC est en URL (ex. http://intra/proxy.pac)
+Vérifie qu’il est bien accessible depuis ton Pod (en passant éventuellement par un proxy de bootstrap).
+
+🔧 Solutions possibles
+
+Corriger ton PAC (le plus propre) :
+remplacer les lignes qui renvoient un PROXY ///... par quelque chose de valide (PROXY proxy.company.com:8080).
+
+Forcer un proxy statique (bypass PAC) :
+Si tu sais déjà que ton proxy est proxy.company.com:8080, tu peux lancer px sans PAC :
+
+px --proxy proxy.company.com:8080 --user "$PX_USER" --password "$PX_PASSWORD" --listen 0.0.0.0:3128
+
+
+Debug temporaire : logguer ce que renvoie ton proxy.pac avec un petit script Node/Python, pour voir la sortie de FindProxyForURL().
+
+👉 Question : est-ce que ton PAC file est complexe (avec plein de règles), ou est-ce qu’il redirige toujours vers le même proxy (PROXY proxy.company.com:8080) ?
+
+Si simple → on peut remplacer --pac par --proxy.
+
+Si complexe → il faudra corriger le PAC (ou wrapper FindProxyForURL).
+
+Tu veux que je t’aide à inspecter et corriger ton PAC file pour que px l’accepte ?
