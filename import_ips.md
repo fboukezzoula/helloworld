@@ -963,7 +963,7 @@ If you want an additional “data lineage” diagram showing how csv columns map
 
 ```python
 #!/usr/bin/env python3
-# NetBox updater: emoji summary + numeric CFs + always-apply tag.
+# NetBox updater: emoji summary + numeric CFs + always-apply tag (IDs only).
 # Safe fetch (no limit=0), robust iteration, and better error messages.
 
 import os, sys, csv, argparse, ipaddress
@@ -1084,8 +1084,39 @@ def ensure_tag(nb):
         print(f"[WARN] Could not ensure tag '{TAG_NAME}': {e}", file=sys.stderr)
         return None
 
+def extract_tag_ids(nb, tags):
+    """Return a set of numeric tag IDs from a prefix's 'tags' field."""
+    ids = set()
+    for t in (tags or []):
+        # pynetbox returns dicts for tags on GET
+        if isinstance(t, dict):
+            if t.get("id"):
+                ids.add(t["id"])
+            elif t.get("slug"):
+                try:
+                    m = list(nb.extras.tags.filter(slug=t["slug"]))
+                    if m: ids.add(m[0].id)
+                except Exception:
+                    pass
+            elif t.get("name"):
+                try:
+                    m = list(nb.extras.tags.filter(name=t["name"]))
+                    if m: ids.add(m[0].id)
+                except Exception:
+                    pass
+        elif isinstance(t, int):
+            ids.add(t)
+        elif isinstance(t, str):
+            # Very old exports might be strings; resolve by name/slug
+            try:
+                m = list(nb.extras.tags.filter(name=t)) or list(nb.extras.tags.filter(slug=t))
+                if m: ids.add(m[0].id)
+            except Exception:
+                pass
+    return ids
+
 def iter_matches(nb, prefix):
-    # Safe iterator: no limit=0; do not call len() on RecordSet.
+    # Safe iterator: no limit=0; do not call len() on RecordSet directly.
     try:
         for obj in nb.ipam.prefixes.filter(prefix=prefix):
             yield obj
@@ -1094,7 +1125,7 @@ def iter_matches(nb, prefix):
 
 # --- Main ---
 def main():
-    ap = argparse.ArgumentParser(description="Update NetBox CFs from azure-vnet-scan CSV. Always tag prefixes with 'ip-availables-sync'.")
+    ap = argparse.ArgumentParser(description="Update NetBox CFs from azure-vnet-scan CSV. Always tag prefixes with 'ip-availables-sync' (IDs only).")
     ap.add_argument("csv", help="CSV produced by azure-vnet-scan.sh")
     ap.add_argument("--green-th", type=float, default=None, help="🟢 threshold (%% available). Default: env AVAIL_GREEN_TH or 60")
     ap.add_argument("--orange-th", type=float, default=None, help="🟠 threshold (%% available). Default: env AVAIL_ORANGE_TH or 30")
@@ -1125,12 +1156,13 @@ def main():
 
     nb = pynetbox.api(NETBOX_URL, token=NETBOX_TOKEN)
 
-    # Always ensure CFs and tag exist (unless disabled for CFs)
+    # Ensure CFs (unless disabled) and the tag upfront
     if not args.no_create_cf:
         ensure_cf(nb, CF_SUMMARY_DEF)
         ensure_cf(nb, CF_USED_DEF)
         ensure_cf(nb, CF_AVAIL_DEF)
-    ensure_tag(nb)
+    tag_obj = ensure_tag(nb)
+    tag_id = getattr(tag_obj, "id", None)
 
     with open(args.csv, "r", encoding="utf-8-sig", newline="") as f:
         sample = f.read(4096); f.seek(0)
@@ -1162,7 +1194,6 @@ def main():
 
             summary = make_summary(prefix, nb_subnets, ips_used, ips_avail, green_th, orange_th)
 
-            # Collect matches safely without limit=0 and without direct len() on RecordSet
             matches = [obj for obj in iter_matches(nb, prefix)]
 
             if not matches and args.create_missing:
@@ -1170,7 +1201,7 @@ def main():
                     "prefix": prefix,
                     "status": "container",
                     "description": CREATE_DESC,
-                    "tags": [TAG_NAME],
+                    "tags": ([tag_id] if tag_id else []),  # IDs only if we have one
                 }
                 if args.dry_run:
                     print(f"[DRY][CREATE] container prefix {prefix} (global) with tag '{TAG_NAME}'")
@@ -1194,16 +1225,11 @@ def main():
                 continue
 
             for p in matches:
-                # Ensure/merge tag on the object
-                existing_tags = []
-                try:
-                    for t in (p.tags or []):
-                        existing_tags.append(t.get("name") or t.get("slug"))
-                except Exception:
-                    pass
-                if TAG_NAME not in existing_tags:
-                    existing_tags.append(TAG_NAME)
-                tags_payload = sorted(set(filter(None, existing_tags)))
+                # Preserve existing tags by ID and ensure our tag ID is present
+                existing_ids = extract_tag_ids(nb, getattr(p, "tags", []))
+                if tag_id:
+                    existing_ids.add(tag_id)
+                tags_payload = sorted(existing_ids)
 
                 cf = p.custom_fields or {}
                 cf[CF_SUMMARY_NAME] = summary
@@ -1211,7 +1237,7 @@ def main():
                 cf[CF_AVAIL_NAME] = ips_avail
 
                 if args.dry_run:
-                    print(f"[DRY][UPDATE] {prefix}: tags={tags_payload} | {CF_SUMMARY_NAME}='{summary}' | {CF_USED_NAME}={ips_used} | {CF_AVAIL_NAME}={ips_avail}")
+                    print(f"[DRY][UPDATE] {prefix}: tag_ids={tags_payload} | {CF_SUMMARY_NAME}='{summary}' | {CF_USED_NAME}={ips_used} | {CF_AVAIL_NAME}={ips_avail}")
                 else:
                     try:
                         ok = p.update({"custom_fields": cf, "tags": tags_payload})
@@ -1221,7 +1247,6 @@ def main():
                         else:
                             print(f"[ERR] Update failed for {prefix}", file=sys.stderr)
                     except Exception as e:
-                        # Show full error message from pynetbox, if available
                         err_text = getattr(e, "error", None) or getattr(e, "args", [""])[0]
                         print(f"[ERR] Update exception for {prefix}: {err_text}", file=sys.stderr)
 
@@ -1233,3 +1258,20 @@ def main():
 if __name__ == "__main__":
     main()
 ```
+
+
+Why this resolves your error
+
+NetBox 4.x requires tags as numeric IDs (or dicts); we now send IDs only.
+Creation also uses the tag ID (no more “unrecognized value”).
+Existing tags on each prefix are preserved by collecting their IDs first.
+Quick test
+
+Dry run:
+NETBOX_URL=... NETBOX_TOKEN=... python3 update_list_available_ips.py out.csv --dry-run
+You should see “tag_ids=[…]” in the log lines.
+
+Live update:
+NETBOX_URL=... NETBOX_TOKEN=... python3 update_list_available_ips.py out.csv --create-missing
+
+If anything still complains, paste the new error body and I’ll adjust fast.
