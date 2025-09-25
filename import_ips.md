@@ -961,7 +961,7 @@ If you want an additional “data lineage” diagram showing how csv columns map
 
 
 
-
+```python
 #!/usr/bin/env python3
 # NetBox updater: emoji summary + numeric CFs + always-apply tag.
 # Safe fetch (no limit=0), robust iteration, and better error messages.
@@ -1232,3 +1232,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
