@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+# Annotate out.csv with a 'netbox_prefix_id' column by looking up prefixes in NetBox.
+
+import os, sys, csv, argparse
+import pynetbox
+
+def find_col(fieldnames, candidates):
+    lower = { (fn or "").strip().lower(): fn for fn in fieldnames }
+    for c in candidates:
+        if c in lower:
+            return lower[c]
+    return None
+
+def choose_best(matches):
+    # Prefer global (vrf is None), else first
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    global_candidates = [m for m in matches if getattr(m, "vrf", None) is None]
+    if len(global_candidates) == 1:
+        return global_candidates[0]
+    return matches[0]
+
+def main():
+    ap = argparse.ArgumentParser(description="Add netbox_prefix_id to a CSV by querying NetBox.")
+    ap.add_argument("csv_in", help="Input CSV (out.csv from azure-vnet-scan.sh)")
+    ap.add_argument("-o", "--output", default="out_with_ids.csv", help="Output CSV file")
+    ap.add_argument("--strict", action="store_true", help="Leave ID blank if multiple matches (no best guess)")
+    args = ap.parse_args()
+
+    NETBOX_URL = os.environ.get("NETBOX_URL")
+    NETBOX_TOKEN = os.environ.get("NETBOX_TOKEN")
+    if not NETBOX_URL or not NETBOX_TOKEN:
+        print("Set NETBOX_URL and NETBOX_TOKEN", file=sys.stderr)
+        sys.exit(2)
+    nb = pynetbox.api(NETBOX_URL, token=NETBOX_TOKEN)
+
+    with open(args.csv_in, "r", encoding="utf-8-sig", newline="") as f:
+        sample = f.read(4096); f.seek(0)
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;")
+        except Exception:
+            dialect = csv.excel
+        reader = csv.DictReader(f, dialect=dialect)
+        cols = reader.fieldnames or []
+
+        col_prefix = find_col(cols, {"address space","adresse space","prefix"})
+        if not col_prefix:
+            print("[ERR] Could not detect 'address space'/'prefix' column", file=sys.stderr)
+            sys.exit(1)
+
+        out_cols = list(cols)
+        if "netbox_prefix_id" not in [c.lower() for c in out_cols]:
+            out_cols.append("netbox_prefix_id")
+
+        with open(args.output, "w", encoding="utf-8", newline="") as out:
+            writer = csv.DictWriter(out, fieldnames=out_cols)
+            writer.writeheader()
+            for row in reader:
+                cidr = (row.get(col_prefix) or "").strip()
+                nbid = ""
+                if cidr:
+                    matches = [m for m in nb.ipam.prefixes.filter(prefix=cidr)]
+                    if len(matches) == 1:
+                        nbid = str(matches[0].id)
+                    elif len(matches) > 1 and not args.strict:
+                        best = choose_best(matches)
+                        nbid = str(best.id) if best else ""
+                row["netbox_prefix_id"] = nbid
+                writer.writerow(row)
+                print(f"[INFO] {cidr} -> id={nbid or 'N/A'}")
+    print(f"Written: {args.output}")
+
+if __name__ == "__main__":
+    main()
+
+
+
+#!/usr/bin/env python3
+# Annotate out.csv with a 'netbox_prefix_id' column by looking up prefixes in NetBox.
+
+import os, sys, csv, argparse
+import pynetbox
+
+def find_col(fieldnames, candidates):
+    lower = { (fn or "").strip().lower(): fn for fn in fieldnames }
+    for c in candidates:
+        if c in lower:
+            return lower[c]
+    return None
+
+def choose_best(matches):
+    # Prefer global (vrf is None), else first
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    global_candidates = [m for m in matches if getattr(m, "vrf", None) is None]
+    if len(global_candidates) == 1:
+        return global_candidates[0]
+    return matches[0]
+
+def main():
+    ap = argparse.ArgumentParser(description="Add netbox_prefix_id to a CSV by querying NetBox.")
+    ap.add_argument("csv_in", help="Input CSV (out.csv from azure-vnet-scan.sh)")
+    ap.add_argument("-o", "--output", default="out_with_ids.csv", help="Output CSV file")
+    ap.add_argument("--strict", action="store_true", help="Leave ID blank if multiple matches (no best guess)")
+    args = ap.parse_args()
+
+    NETBOX_URL = os.environ.get("NETBOX_URL")
+    NETBOX_TOKEN = os.environ.get("NETBOX_TOKEN")
+    if not NETBOX_URL or not NETBOX_TOKEN:
+        print("Set NETBOX_URL and NETBOX_TOKEN", file=sys.stderr)
+        sys.exit(2)
+    nb = pynetbox.api(NETBOX_URL, token=NETBOX_TOKEN)
+
+    with open(args.csv_in, "r", encoding="utf-8-sig", newline="") as f:
+        sample = f.read(4096); f.seek(0)
+        try:
+            dialect = csv.Sniffer().sniff(sample, delimiters=",;")
+        except Exception:
+            dialect = csv.excel
+        reader = csv.DictReader(f, dialect=dialect)
+        cols = reader.fieldnames or []
+
+        col_prefix = find_col(cols, {"address space","adresse space","prefix"})
+        if not col_prefix:
+            print("[ERR] Could not detect 'address space'/'prefix' column", file=sys.stderr)
+            sys.exit(1)
+
+        out_cols = list(cols)
+        if "netbox_prefix_id" not in [c.lower() for c in out_cols]:
+            out_cols.append("netbox_prefix_id")
+
+        with open(args.output, "w", encoding="utf-8", newline="") as out:
+            writer = csv.DictWriter(out, fieldnames=out_cols)
+            writer.writeheader()
+            for row in reader:
+                cidr = (row.get(col_prefix) or "").strip()
+                nbid = ""
+                if cidr:
+                    matches = [m for m in nb.ipam.prefixes.filter(prefix=cidr)]
+                    if len(matches) == 1:
+                        nbid = str(matches[0].id)
+                    elif len(matches) > 1 and not args.strict:
+                        best = choose_best(matches)
+                        nbid = str(best.id) if best else ""
+                row["netbox_prefix_id"] = nbid
+                writer.writerow(row)
+                print(f"[INFO] {cidr} -> id={nbid or 'N/A'}")
+    print(f"Written: {args.output}")
+
+if __name__ == "__main__":
+    main()
+
+
+Usage:
+
+NETBOX_URL=… NETBOX_TOKEN=… python3 annotate_netbox_ids.py out.csv -o out_with_ids.csv
+Then run the updater on out_with_ids.csv
+B) Make the updater use netbox_prefix_id if present
+Patch your update_list_available_ips.py to prefer an exact ID match:
+
+Detect the optional column:
+col_id = find_col(cols, {"netbox_prefix_id","netbox prefix id"})
+
+When resolving matches, use ID if present:
+
+
+
+# After reading row values:
+id_val = (row.get(col_id) or "").strip() if col_id else ""
+matches = []
+if id_val.isdigit():
+    obj = nb.ipam.prefixes.get(int(id_val))
+    if obj:
+        matches = [obj]
+# Fallback to lookup by CIDR if no ID or not found
+if not matches:
+    matches = [obj for obj in iter_matches(nb, prefix)]
+
