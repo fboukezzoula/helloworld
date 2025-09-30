@@ -292,3 +292,23 @@ def main():
 if __name__ == "__main__":
     main()
 ```
+
+## How to verify
+
+- Pick a prefix with pre-existing tags.
+
+- Dry-run:
+
+- NETBOX_URL=… NETBOX_TOKEN=… python3 update_list_available_ips.py update_list_available_ip.csv --dry-run | grep -A1 "math DRY``````math UPDATE" | head
+
+- You should see tags=[..., {'slug': 'azure'}, 123, {'slug': 'ip-availables-sync'}] or similar.
+
+## Live:
+
+NETBOX_URL=… NETBOX_TOKEN=… python3 update_list_available_ips.py update_list_available_ip.csv --create-missing
+
+" Then check one updated prefix:
+
+curl -H "Authorization: Token NETBOXOKEN""NETBOX_URL/api/ipam/prefixes/<id>/" | jq '.tags'
+
+If anything still looks off (e.g., tags missing in the prefix GET), paste one GET /api/ipam/prefixes/<id>/ response for a tagged prefix and I’ll align the payload creation to your instance.
