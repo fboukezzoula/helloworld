@@ -1,15 +1,16 @@
 ```python
 #!/usr/bin/env python3
 # Update NetBox CFs from CSV (emoji summary + numeric fields).
-# Preserve ALL existing tags and ensure 'ip-availables-sync' is present.
-# Uses netbox_prefix_id when present in CSV; else matches by CIDR.
+# Preserve ALL existing tags and ensure 'ip-availables-sync' (IDs only for NetBox 4.x).
+# Prefers netbox_prefix_id when present; falls back to matching by CIDR.
 
 import os, sys, csv, argparse, ipaddress
 import pynetbox
 
+# --- Custom fields ---
 CF_SUMMARY_NAME = "list_available_ips"
-CF_USED_NAME = "ips_used"
-CF_AVAIL_NAME = "ips_available"
+CF_USED_NAME    = "ips_used"
+CF_AVAIL_NAME   = "ips_available"
 
 CF_SUMMARY_DEF = {
     "name": CF_SUMMARY_NAME, "label": "List available IPs", "type": "text",
@@ -27,11 +28,13 @@ CF_AVAIL_DEF = {
     "required": False,
 }
 
+# --- Tag (always enforced) ---
 TAG_NAME = "ip-availables-sync"
 TAG_SLUG = "ip-availables-sync"
 TAG_COLOR = "teal"
 CREATE_DESC = os.environ.get("IP_SYNC_CREATE_DESC", "⚠️ PREFIX CREATED BY IP AVAILABILITY SYNC")
 
+# --- Helpers ---
 def to_int(s, default=0):
     try:
         s = (s or "").replace(" ", "").replace(",", "")
@@ -47,49 +50,54 @@ def to_float(s, default=None):
         return default
 
 def fmt_int(n):
-    try: n = int(n)
-    except Exception: return "0"
+    try:
+        n = int(n)
+    except Exception:
+        return "0"
     return f"{n:,}".replace(",", " ")
 
 def avail_pct(prefix_cidr, ips_avail, ipv4_reserved=5):
-    try: net = ipaddress.ip_network(prefix_cidr, strict=False)
-    except Exception: return None
-    if net.version == 6: return None
-    usable = max(net.num_addresses - ipv4_reserved, 0)
-    if usable == 0: return None
-    return round(max(0.0, min(100.0, (float(ips_avail)/float(usable))*100.0))), 1)
-
-def status_emoji(pct, green_th=60.0, orange_th=30.0):
-    if pct is None: return "🔵"
-    if pct >= green_th: return "🟢"
-    if pct >= orange_th: return "🟠"
-    return "🔴"
-
-def make_summary(prefix_cidr, nb_subnets, ips_used, ips_avail, green_th, orange_th):
     try:
         net = ipaddress.ip_network(prefix_cidr, strict=False)
     except Exception:
-        net = None
-    pct = None
-    if net and net.version == 4:
-        total = net.num_addresses
-        usable = max(total - 5, 0)
-        pct = round((ips_avail / usable) * 100.0, 1) if usable else None
+        return None
+    if net.version == 6:
+        return None
+    usable = max(net.num_addresses - ipv4_reserved, 0)
+    if usable == 0:
+        return None
+    pct = max(0.0, min(100.0, (float(ips_avail) / float(usable)) * 100.0))
+    return round(pct, 1)
+
+def status_emoji(pct, green_th=60.0, orange_th=30.0):
+    if pct is None:
+        return "🔵"
+    if pct >= green_th:
+        return "🟢"
+    if pct >= orange_th:
+        return "🟠"
+    return "🔴"
+
+def make_summary(prefix_cidr, nb_subnets, ips_used, ips_avail, green_th, orange_th):
+    pct = avail_pct(prefix_cidr, ips_avail)
     status = status_emoji(pct, green_th, orange_th)
     line = f"{status} | 🧩 Subnets: {fmt_int(nb_subnets)} | 🔴 Used: {fmt_int(ips_used)} | 🟢 Available: {fmt_int(ips_avail)}"
-    if pct is not None: line += f" | ⚖️ {pct}%"
+    if pct is not None:
+        line += f" | ⚖️ {pct}%"
     return line
 
 def find_col(fieldnames, candidates):
     lower = {(fn or "").strip().lower(): fn for fn in fieldnames}
     for c in candidates:
-        if c in lower: return lower[c]
+        if c in lower:
+            return lower[c]
     return None
 
 def ensure_cf(nb, cf_def):
     try:
         name = cf_def["name"]
-        if list(nb.extras.custom_fields.filter(name=name)): return
+        if list(nb.extras.custom_fields.filter(name=name)):
+            return
         nb.extras.custom_fields.create(cf_def)
     except Exception as e:
         print(f"[WARN] ensure_cf {cf_def.get('name')}: {e}", file=sys.stderr)
@@ -102,73 +110,39 @@ def ensure_tag(nb):
         print(f"[WARN] ensure_tag {TAG_SLUG}: {e}", file=sys.stderr)
         return None
 
-def build_tags_payload(nb, prefix_obj, sync_tag_id, sync_tag_slug):
-    """Return a list suitable for PATCH 'tags': keep existing tags + add sync tag.
-       Prefer numeric IDs; fall back to {'slug': ...} or {'name': ...} if needed.
-       Does NOT call /extras/tags to resolve IDs (works with limited permissions)."""
-    payload = []
+# Normalize any tag representation to a numeric ID (preferred) or return None
+def normalize_tag_to_id(t):
+    # pynetbox Record: has attribute .id
+    if hasattr(t, "id") and isinstance(getattr(t, "id"), int):
+        return int(getattr(t, "id"))
+    # dict
+    if isinstance(t, dict):
+        tid = t.get("id")
+        if isinstance(tid, int):
+            return tid
+    # already an int
+    if isinstance(t, int):
+        return t
+    # strings (name/slug) are NOT acceptable for write in NetBox 4.x -> skip
+    return None
 
-    def add_tag_entry(tag):
-        # tag may be dict/int/str from API representation
-        if isinstance(tag, dict):
-            if tag.get("id") is not None:
-                payload.append(tag["id"])
-            elif tag.get("slug"):
-                payload.append({"slug": tag["slug"]})
-            elif tag.get("name"):
-                payload.append({"name": tag["name"]})
-        elif isinstance(tag, int):
-            payload.append(tag)
-        elif isinstance(tag, str):
-            # unknown form, assume slug
-            payload.append({"slug": tag})
-
-    # Fresh copy to ensure we see current tags
-    fresh = None
+def get_existing_tag_ids(nb, prefix_obj):
+    """
+    Re-fetch prefix by ID to reliably read current tags, then
+    normalize to numeric IDs (skip anything we can't resolve to an ID).
+    """
     try:
         fresh = nb.ipam.prefixes.get(prefix_obj.id)
+        tags_src = getattr(fresh, "tags", None)
     except Exception:
-        fresh = None
-    tags_src = getattr(fresh, "tags", None) if fresh is not None else getattr(prefix_obj, "tags", None)
+        tags_src = getattr(prefix_obj, "tags", None)
 
+    ids = set()
     for t in (tags_src or []):
-        add_tag_entry(t)
-
-    # Ensure sync tag present
-    if sync_tag_id is not None:
-        # check if already present (id or dict with id)
-        def has_id(id_):
-            for x in payload:
-                if isinstance(x, int) and x == id_: return True
-                if isinstance(x, dict) and x.get("id") == id_: return True
-            return False
-        if not has_id(sync_tag_id):
-            payload.append(sync_tag_id)
-    else:
-        # fallback to slug
-        def has_slug(slug):
-            for x in payload:
-                if isinstance(x, dict) and x.get("slug") == slug: return True
-            return False
-        if not has_slug(sync_tag_slug):
-            payload.append({"slug": sync_tag_slug})
-
-    # Dedupe (by id first, else by slug/name tuple or int)
-    seen = set()
-    deduped = []
-    def key(x):
-        if isinstance(x, int): return ("id", x)
-        if isinstance(x, dict):
-            if "id" in x: return ("id", x["id"])
-            if "slug" in x: return ("slug", x["slug"])
-            if "name" in x: return ("name", x["name"])
-        return ("raw", repr(x))
-    for x in payload:
-        k = key(x)
-        if k not in seen:
-            seen.add(k)
-            deduped.append(x)
-    return deduped
+        tid = normalize_tag_to_id(t)
+        if tid is not None:
+            ids.add(tid)
+    return ids
 
 def iter_matches(nb, prefix):
     try:
@@ -177,8 +151,9 @@ def iter_matches(nb, prefix):
     except Exception as e:
         print(f"[ERR] Query failed for prefix={prefix}: {e}", file=sys.stderr)
 
+# --- Main ---
 def main():
-    ap = argparse.ArgumentParser(description="Update NetBox CFs from CSV; preserve all tags and add 'ip-availables-sync'.")
+    ap = argparse.ArgumentParser(description="Update NetBox CFs from CSV; preserve all tags and add 'ip-availables-sync' (IDs only).")
     ap.add_argument("csv", help="CSV (supports netbox_prefix_id column)")
     ap.add_argument("--green-th", type=float, default=None, help="🟢 threshold (%% available). Default env AVAIL_GREEN_TH or 60")
     ap.add_argument("--orange-th", type=float, default=None, help="🟠 threshold (%% available). Default env AVAIL_ORANGE_TH or 30")
@@ -205,7 +180,7 @@ def main():
 
     if not args.no_create_cf:
         ensure_cf(nb, CF_SUMMARY_DEF); ensure_cf(nb, CF_USED_DEF); ensure_cf(nb, CF_AVAIL_DEF)
-    tag_obj = ensure_tag(nb); tag_id = getattr(tag_obj, "id", None)
+    tag_obj = ensure_tag(nb); sync_tag_id = getattr(tag_obj, "id", None)
 
     with open(args.csv, "r", encoding="utf-8-sig", newline="") as f:
         sample = f.read(4096); f.seek(0)
@@ -233,7 +208,7 @@ def main():
             ips_avail  = to_int(row.get(col_avail), 0)
             summary = make_summary(prefix, nb_subnets, ips_used, ips_avail, green_th, orange_th)
 
-            # Resolve match: prefer ID if present
+            # Resolve: prefer ID if present
             matches = []
             if col_id:
                 id_val = (row.get(col_id) or "").strip()
@@ -248,10 +223,10 @@ def main():
 
             if not matches and args.create_missing:
                 payload = {"prefix": prefix, "status": "container", "description": CREATE_DESC}
-                if tag_id is not None: payload["tags"] = [tag_id]
-                else: payload["tags"] = [{"slug": TAG_SLUG}]
+                if sync_tag_id is not None:
+                    payload["tags"] = [sync_tag_id]
                 if args.dry_run:
-                    print(f"[DRY][CREATE] container {prefix} with tag '{TAG_SLUG}'")
+                    print(f"[DRY][CREATE] container {prefix} with sync tag id={sync_tag_id}")
                 else:
                     try:
                         newp = nb.ipam.prefixes.create(payload)
@@ -266,49 +241,40 @@ def main():
                 print(f"[SKIP] Non-unique ({len(matches)}) for {prefix}"); skipped += 1; continue
 
             for p in matches:
-                tags_payload = build_tags_payload(nb, p, tag_id, TAG_SLUG)
+                # Preserve existing tag IDs, add sync tag ID
+                existing_ids = get_existing_tag_ids(nb, p)  # e.g., {2,3,5}
+                if sync_tag_id is not None:
+                    existing_ids.add(sync_tag_id)
+                tags_payload = sorted(existing_ids)  # NetBox 4.x expects numeric IDs
+
                 cf = p.custom_fields or {}
                 cf[CF_SUMMARY_NAME] = summary
-                cf[CF_USED_NAME] = ips_used
-                cf[CF_AVAIL_NAME] = ips_avail
+                cf[CF_USED_NAME]    = ips_used
+                cf[CF_AVAIL_NAME]   = ips_avail
 
                 if args.dry_run:
-                    print(f"[DRY][UPDATE] {prefix}: tags={tags_payload} | {CF_SUMMARY_NAME}='{summary}' | {CF_USED_NAME}={ips_used} | {CF_AVAIL_NAME}={ips_avail}")
-                else:
-                    try:
-                        ok = p.update({"custom_fields": cf, "tags": tags_payload})
-                        if ok:
-                            print(f"[OK] Updated {prefix} (tags preserved + sync tag ensured)")
-                            updated += 1
-                        else:
-                            print(f"[ERR] Update failed for {prefix}", file=sys.stderr)
-                    except Exception as e:
-                        print(f"[ERR] Update exception for {prefix}: {getattr(e, 'error', None) or e}", file=sys.stderr)
+                    kept = [tid for tid in tags_payload if tid != sync_tag_id] if sync_tag_id is not None else tags_payload
+                    print(f"[DRY][UPDATE] {prefix}: keep_tag_ids={kept} + sync_id={sync_tag_id} "
+                          f"| {CF_SUMMARY_NAME}='{summary}' | {CF_USED_NAME}={ips_used} | {CF_AVAIL_NAME}={ips_avail}")
+                    continue
 
-            if not args.strict_unique and len(matches) > 1: multi += 1
+                try:
+                    ok = p.update({"custom_fields": cf, "tags": tags_payload})
+                    if ok:
+                        print(f"[OK] Updated {prefix} (preserved {len(tags_payload)} tag IDs incl. sync)")
+                        updated += 1
+                    else:
+                        print(f"[ERR] Update failed for {prefix}", file=sys.stderr)
+                except Exception as e:
+                    print(f"[ERR] Update exception for {prefix}: {getattr(e, 'error', None) or e}", file=sys.stderr)
+
+            if not args.strict_unique and len(matches) > 1:
+                multi += 1
 
     print(f"\nSummary: updated={updated}, created={created}, skipped={skipped}, multi-prefixes={multi}, missing={missing}")
 
 if __name__ == "__main__":
     main()
 ```
-
-## How to verify
-
-- Pick a prefix with pre-existing tags.
-
-- Dry-run:
-
-- NETBOX_URL=… NETBOX_TOKEN=… python3 update_list_available_ips.py update_list_available_ip.csv --dry-run | grep -A1 "math DRY``````math UPDATE" | head
-
-- You should see tags=[..., {'slug': 'azure'}, 123, {'slug': 'ip-availables-sync'}] or similar.
-
-## Live:
-
-NETBOX_URL=… NETBOX_TOKEN=… python3 update_list_available_ips.py update_list_available_ip.csv --create-missing
-
-" Then check one updated prefix:
-
-curl -H "Authorization: Token NETBOXOKEN""NETBOX_URL/api/ipam/prefixes/<id>/" | jq '.tags'
 
 If anything still looks off (e.g., tags missing in the prefix GET), paste one GET /api/ipam/prefixes/<id>/ response for a tagged prefix and I’ll align the payload creation to your instance.
