@@ -28,7 +28,6 @@ set -o pipefail # The return value of a pipeline is the status of the last comma
 ## NEW ##
 # 0. Set your GitHub Enterprise hostname (e.g., github.your-company.com)
 #    DO NOT include "https://" or a trailing slash.
-# gh auth login --hostname github.my-company-internal.com
 GHE_HOSTNAME="github.your-company.com"
 
 # 1. Set your GitHub Enterprise organization name.
@@ -176,7 +175,8 @@ main() {
 }
 
 # Run the main function
-main```
+main
+```
 
 # How to Use the Script
 1. Save the Code: Save the script above as a file, for example, github_pr_report.sh.
