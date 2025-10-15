@@ -117,15 +117,17 @@ get_repo_list() {
 process_review_prs() {
     local repo_full_name="$1"
     local pr_list_json
+    # The --json fields are correct, the problem is parsing the structure
     pr_list_json=$(gh pr list -R "$repo_full_name" --state open --limit 100 \
         --json number,title,url,author,createdAt,reviewRequests \
         --search "-is:draft" 2>/dev/null)
 
     local prs
-    ## FIX ##: Correctly gets .login for users AND .name for teams.
+    ## FIX ##: This is a much more robust jq filter that should work on older GHE versions.
+    ## It directly looks for .login or .name inside the reviewRequests array items.
     prs=$(echo "$pr_list_json" | jq -r '.[] | [
         .number, .title, .url, .author.login, .createdAt,
-        ([.reviewRequests[].requestedReviewer | .login // .name] | join(" ")) // "None"
+        ([.reviewRequests[]? | .login // .name] | join(" ")) // "None"
     ] | @tsv')
 
     if [[ -z "$prs" ]]; then return 0; fi
