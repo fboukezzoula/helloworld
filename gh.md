@@ -1,0 +1,423 @@
+# Features of this Script:
+- Two Modes: Scan all repositories in an organization or a specific list of repositories.
+- Beautiful Console Output: Uses colors, emojis, and formatted tables with printf.
+- HTML Report Generation: Creates a self-contained HTML file with embedded CSS, perfect for sending in an email.
+- Efficient: It minimizes API calls by fetching all branches once per repository instead of checking each branch individually.
+- Prerequisite Checks: Ensures gh and jq are installed and that you are logged in.
+- Easy Configuration: All user-specific settings are at the top of the script.
+
+# Prerequisites
+- Install gh CLI: Follow the official installation guide: https://github.com/cli/cli#installation
+- Install jq: A lightweight command-line JSON processor.
+
+```bash
+#!/bin/bash
+set -e # Exit immediately if a command exits with a non-zero status.
+set -o pipefail # The return value of a pipeline is the status of the last command to exit with a non-zero status.
+
+#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#
+#                                                              #
+#             GitHub Pull Request Health Report                #
+#                                                              #
+#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#
+
+# =================================================================================
+#  CONFIGURATIONS - PLEASE EDIT THESE VALUES
+# =================================================================================
+
+# 1. Set your GitHub Enterprise organization name.
+ORG_NAME="your-github-organization"
+
+# 2. Choose the scan mode:
+#    - "org":  Scan all repositories in the organization specified above.
+#    - "list": Scan only the repositories listed in the REPOS_ARRAY below.
+SCAN_MODE="org" # or "list"
+
+# 3. If using SCAN_MODE="list", define your repositories here.
+#    The script will automatically prefix them with "${ORG_NAME}/".
+REPOS_ARRAY=(
+  "my-awesome-app"
+  "our-cool-service"
+  "the-best-library"
+)
+
+# 4. Set the output file for the HTML report.
+HTML_OUTPUT_FILE="github_report_$(date +%Y-%m-%d).html"
+
+# =================================================================================
+#  SCRIPT CORE - No need to edit below this line
+# =================================================================================
+
+# --- Colors and Emojis for Console Output ---
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+EMOJI_REVIEW="🔍"
+EMOJI_BRANCH="🌿"
+EMOJI_SUCCESS="✅"
+EMOJI_ERROR="❌"
+EMOJI_INFO="ℹ️"
+
+# --- Global Counters ---
+TOTAL_PRS_AWAITING_REVIEW=0
+TOTAL_UNDELETED_BRANCHES=0
+
+# --- Function to check for required commands ---
+check_dependencies() {
+  echo -e "${BLUE}Checking for required tools...${NC}"
+  if ! command -v gh &> /dev/null; then
+    echo -e "${RED}${EMOJI_ERROR} 'gh' CLI is not installed. Please install it to continue.${NC}"
+    echo "Installation guide: https://github.com/cli/cli#installation"
+    exit 1
+  fi
+  if ! command -v jq &> /dev/null; then
+    echo -e "${RED}${EMOJI_ERROR} 'jq' is not installed. Please install it to continue.${NC}"
+    echo "On Debian/Ubuntu: sudo apt-get install jq"
+    echo "On macOS (Homebrew): brew install jq"
+    exit 1
+  fi
+  # Check if logged in to the org's host
+  if ! gh auth status 2>&1 | grep -q "$ORG_NAME"; then
+      echo -e "${YELLOW}${EMOJI_INFO} Warning: 'gh' may not be authenticated for a host related to '$ORG_NAME'.${NC}"
+      echo -e "${YELLOW}Please ensure you've run 'gh auth login' for your GitHub Enterprise instance.${NC}"
+  fi
+  echo -e "${GREEN}${EMOJI_SUCCESS} All dependencies are met.${NC}\n"
+}
+
+# --- Functions for HTML Generation ---
+init_html() {
+cat <<EOF > "$1"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitHub Pull Request Report for ${ORG_NAME}</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 20px; background-color: #f9f9f9; }
+        .container { max-width: 1200px; margin: auto; background: #fff; padding: 25px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1, h2 { border-bottom: 2px solid #eee; padding-bottom: 10px; margin-top: 30px; color: #1a1a1a; }
+        h1 { font-size: 2em; }
+        h2 { font-size: 1.5em; }
+        table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+        th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+        th { background-color: #f2f2f2; font-weight: bold; }
+        tr:nth-child(even) { background-color: #f9f9f9; }
+        tr:hover { background-color: #f1f1f1; }
+        a { color: #0366d6; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .footer { text-align: center; margin-top: 30px; font-size: 0.9em; color: #777; }
+        .empty-state { padding: 20px; text-align: center; color: #888; background-color: #fafafa; border: 1px dashed #ddd; }
+        .total-count { font-weight: bold; font-size: 1.2em; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>${EMOJI_REVIEW} GitHub PR Report for ${ORG_NAME}</h1>
+        <p>Generated on: $(date)</p>
+EOF
+}
+
+add_html_section_header() {
+    echo "<h2>$1 $2</h2>" >> "$3"
+}
+
+start_html_table() {
+    echo "<table><thead><tr>" >> "$2"
+    for header in "${!1}"; do
+        echo "<th>${header}</th>" >> "$2"
+    done
+    echo "</tr></thead><tbody>" >> "$2"
+}
+
+add_html_row() {
+    echo "<tr>" >> "$2"
+    for cell in "${!1}"; do
+        # Check if the cell content is a URL and make it a link
+        if [[ "$cell" == http* ]]; then
+            echo "<td><a href=\"$cell\" target=\"_blank\">Link</a></td>" >> "$2"
+        else
+            echo "<td>${cell}</td>" >> "$2"
+        fi
+    done
+    echo "</tr>" >> "$2"
+}
+
+end_html_table() {
+    echo "</tbody></table>" >> "$1"
+}
+
+add_html_empty_state() {
+    echo "<div class='empty-state'>$1</div>" >> "$2"
+}
+
+add_html_summary() {
+    echo "<p class='total-count'>$1: $2</p>" >> "$3"
+}
+
+finalize_html() {
+cat <<EOF >> "$1"
+        <div class="footer">
+            <p>Report generated by the GitHub PR Health Script.</p>
+        </div>
+    </div>
+</body>
+</html>
+EOF
+}
+
+# --- Core Logic Functions ---
+
+# Function to get the list of repositories to scan
+get_repo_list() {
+    if [[ "$SCAN_MODE" == "org" ]]; then
+        echo -e "${BLUE}Fetching all repositories for organization: ${ORG_NAME}...${NC}"
+        # Using `gh repo list` to get the list of repos
+        gh repo list "$ORG_NAME" --limit 1000 --json name --jq '.[].name'
+    else
+        echo -e "${BLUE}Using predefined list of repositories...${NC}"
+        printf '%s\n' "${REPOS_ARRAY[@]}"
+    fi
+}
+
+
+# Function to find open PRs awaiting review
+process_review_prs() {
+    local repo_full_name="$1"
+    
+    # Use gh search to find PRs that are open, not drafts, and in the given repo
+    # We fetch relevant details as JSON
+    local pr_list_json
+    pr_list_json=$(gh pr list -R "$repo_full_name" --state open --limit 100 \
+        --json number,title,url,author,createdAt,reviewRequests \
+        --search "-is:draft" 2>/dev/null)
+
+    # Filter this list to get only PRs with no reviews or where a review is requested
+    # JQ query: Select items, format them as "PR_NUM|TITLE|URL|AUTHOR|CREATED_AT|REVIEWERS"
+    local prs
+    prs=$(echo "$pr_list_json" | jq -r '.[] | [
+        .number,
+        .title,
+        .url,
+        .author.login,
+        (.createdAt | fromdate | strflocaltime("%Y-%m-%d")),
+        ([.reviewRequests[].requestedReviewer.login] | join(", ")) // "None"
+    ] | @tsv')
+
+    if [[ -z "$prs" ]]; then
+        return 0 # No PRs found, which is not an error
+    fi
+
+    local count=0
+    # Print table header if this is the first PR for this section
+    if [[ $TOTAL_PRS_AWAITING_REVIEW -eq 0 ]]; then
+        echo -e "\n${CYAN}--- ${EMOJI_REVIEW} Pull Requests Awaiting Review ---${NC}"
+        printf "%-15s %-10s %-50s %-20s %-15s %-25s\n" "REPO" "#PR" "TITLE" "AUTHOR" "CREATED" "REVIEWERS"
+        printf "%-15s %-10s %-50s %-20s %-15s %-25s\n" "----" "---" "-----" "------" "-------" "---------"
+    fi
+
+    # Loop through each PR and print its details
+    while IFS=$'\t' read -r number title url author created_at reviewers; do
+        repo_short_name=$(basename "$repo_full_name")
+        printf "%-15s ${YELLOW}#%-9s${NC} %-50.50s %-20s %-15s ${RED}%-25s${NC}\n" \
+            "$repo_short_name" "$number" "$title" "$author" "$created_at" "$reviewers"
+        
+        # Add to HTML report
+        local -a row=("$repo_short_name" "#${number}" "$title" "$author" "$created_at" "$reviewers" "$url")
+        add_html_row row[@] "$HTML_OUTPUT_FILE"
+        
+        count=$((count + 1))
+    done <<< "$prs"
+    
+    TOTAL_PRS_AWAITING_REVIEW=$((TOTAL_PRS_AWAITING_REVIEW + count))
+}
+
+# Function to find merged PRs with undeleted branches
+process_undeleted_branches() {
+    local repo_full_name="$1"
+    
+    # Step 1: Get all branches in the repo efficiently. Store them in a variable.
+    # We use gh api with --paginate to handle repos with many branches.
+    local branches
+    branches=$(gh api "repos/$repo_full_name/branches" --paginate -q '.[].name' 2>/dev/null)
+    if [[ -z "$branches" ]]; then
+        echo -e "${YELLOW}Could not fetch branches for $repo_full_name, skipping.${NC}"
+        return 0
+    fi
+
+    # Step 2: Get a list of the 100 most recently merged PRs.
+    local merged_prs_json
+    merged_prs_json=$(gh pr list -R "$repo_full_name" --state merged --limit 100 \
+        --json headRefName,number,title,url,mergedBy,mergedAt,isCrossRepository 2>/dev/null)
+
+    # Step 3: Filter and process the PRs using jq and a loop
+    # JQ query: Select PRs that are NOT cross-repo, then format for output
+    local prs_to_check
+    prs_to_check=$(echo "$merged_prs_json" | jq -r '.[] | select(.isCrossRepository == false) | [
+        .headRefName,
+        .number,
+        .title,
+        .url,
+        .mergedBy.login,
+        (.mergedAt | fromdate | strflocaltime("%Y-%m-%d"))
+    ] | @tsv')
+
+    if [[ -z "$prs_to_check" ]]; then
+        return 0
+    fi
+    
+    local count=0
+    local repo_short_name=$(basename "$repo_full_name")
+
+    while IFS=$'\t' read -r branch_name pr_number title url merged_by merged_at; do
+        # Step 4: Check if the branch name from the PR exists in our list of branches
+        if grep -q -x "$branch_name" <<< "$branches"; then
+            # This is our first finding, print the header
+            if [[ $TOTAL_UNDELETED_BRANCHES -eq 0 && $count -eq 0 ]]; then
+                echo -e "\n${CYAN}--- ${EMOJI_BRANCH} PRs with Undeleted Branches ---${NC}"
+                printf "%-15s %-10s %-40s %-25s %-15s %-20s\n" "REPO" "#PR" "BRANCH NAME" "TITLE" "MERGED BY" "MERGED AT"
+                printf "%-15s %-10s %-40s %-25s %-15s %-20s\n" "----" "---" "-----------" "-----" "---------" "---------"
+            fi
+            
+            printf "%-15s ${YELLOW}#%-9s${NC} ${RED}%-40s${NC} %-25.25s %-15s %-20s\n" \
+                "$repo_short_name" "$pr_number" "$branch_name" "$title" "$merged_by" "$merged_at"
+
+            # Add to HTML report
+            local -a row=("$repo_short_name" "#${pr_number}" "$branch_name" "$title" "$merged_by" "$merged_at" "$url")
+            add_html_row row[@] "$HTML_OUTPUT_FILE"
+
+            count=$((count + 1))
+        fi
+    done <<< "$prs_to_check"
+
+    TOTAL_UNDELETED_BRANCHES=$((TOTAL_UNDELETED_BRANCHES + count))
+}
+
+
+# --- Main Execution ---
+main() {
+    check_dependencies
+    
+    # Get the list of repos based on the chosen mode
+    repo_list=$(get_repo_list)
+    if [[ -z "$repo_list" ]]; then
+      echo -e "${RED}${EMOJI_ERROR} No repositories found. Please check your ORG_NAME or REPOS_ARRAY configuration.${NC}"
+      exit 1
+    fi
+
+    # Initialize HTML file
+    init_html "$HTML_OUTPUT_FILE"
+
+    # --- Section 1: PRs Awaiting Review ---
+    add_html_section_header "${EMOJI_REVIEW}" "Pull Requests Awaiting Review" "$HTML_OUTPUT_FILE"
+    declare -A headers_review=(
+        ["Repo"]="Repo" ["#PR"]="#PR" ["Title"]="Title" ["Author"]="Author" 
+        ["Created"]="Created" ["Reviewers"]="Reviewers" ["Link"]="Link"
+    )
+    start_html_table headers_review[@] "$HTML_OUTPUT_FILE"
+
+    echo -e "\n${BLUE}Scanning repositories for PRs awaiting review...${NC}"
+    while IFS= read -r repo; do
+        echo -n "." # Progress indicator
+        process_review_prs "${ORG_NAME}/${repo}"
+    done <<< "$repo_list"
+    echo # Newline after progress dots
+    
+    if [[ $TOTAL_PRS_AWAITING_REVIEW -eq 0 ]]; then
+        echo -e "${GREEN}No open PRs awaiting review found.${NC}"
+        add_html_empty_state "No open PRs awaiting review found. Great job!" "$HTML_OUTPUT_FILE"
+    fi
+    end_html_table "$HTML_OUTPUT_FILE"
+    add_html_summary "Total PRs Awaiting Review" "$TOTAL_PRS_AWAITING_REVIEW" "$HTML_OUTPUT_FILE"
+
+
+    # --- Section 2: PRs with Undeleted Branches ---
+    add_html_section_header "${EMOJI_BRANCH}" "PRs with Undeleted Branches" "$HTML_OUTPUT_FILE"
+    declare -A headers_branches=(
+        ["Repo"]="Repo" ["#PR"]="#PR" ["Branch Name"]="Branch Name" ["Title"]="Title" 
+        ["Merged By"]="Merged By" ["Merged At"]="Merged At" ["Link"]="Link"
+    )
+    start_html_table headers_branches[@] "$HTML_OUTPUT_FILE"
+
+    echo -e "\n${BLUE}Scanning repositories for undeleted branches from merged PRs...${NC}"
+    while IFS= read -r repo; do
+        echo -n "." # Progress indicator
+        process_undeleted_branches "${ORG_NAME}/${repo}"
+    done <<< "$repo_list"
+    echo # Newline after progress dots
+
+    if [[ $TOTAL_UNDELETED_BRANCHES -eq 0 ]]; then
+        echo -e "${GREEN}No PRs with undeleted branches found.${NC}"
+        add_html_empty_state "No merged PRs with undeleted branches were found. Excellent branch hygiene!" "$HTML_OUTPUT_FILE"
+    fi
+    end_html_table "$HTML_OUTPUT_FILE"
+    add_html_summary "Total PRs with Undeleted Branches" "$TOTAL_UNDELETED_BRANCHES" "$HTML_OUTPUT_FILE"
+
+    # Finalize HTML and print summary
+    finalize_html "$HTML_OUTPUT_FILE"
+
+    echo -e "\n${GREEN}--- Report Summary ---${NC}"
+    echo -e "${EMOJI_REVIEW} Total PRs Awaiting Review: ${YELLOW}${TOTAL_PRS_AWAITING_REVIEW}${NC}"
+    echo -e "${EMOJI_BRANCH} Total PRs with Undeleted Branches: ${YELLOW}${TOTAL_UNDELETED_BRANCHES}${NC}"
+    echo -e "\n${EMOJI_SUCCESS} ${GREEN}HTML report has been generated successfully!${NC}"
+    echo -e "${CYAN}File location: $(pwd)/${HTML_OUTPUT_FILE}${NC}"
+}
+
+# Run the main function
+main
+```
+
+# How to Use the Script
+1. Save the Code: Save the script above as a file, for example, github_pr_report.sh.
+2. Make it Executable: Open your terminal and run chmod +x github_pr_report.sh.
+3. Configure: Open the file in a text editor and modify the variables in the CONFIGURATIONS section:
+- ORG_NAME: Your GitHub Enterprise organization name.
+- SCAN_MODE: Set to "org" to scan everything or "list" to use the array.
+- REPOS_ARRAY: If using "list" mode, populate this with the names of your repositories.
+- HTML_OUTPUT_FILE: Change the name of the report file if you wish.
+4. Run the Script : ./github_pr_report.sh
+
+```text
+Checking for required tools...
+✅ All dependencies are met.
+
+Fetching all repositories for organization: your-github-organization...
+
+Scanning repositories for PRs awaiting review...
+..
+--- 🔍 Pull Requests Awaiting Review ---
+REPO            #PR        TITLE                                              AUTHOR               CREATED         REVIEWERS                
+----            ---        -----                                              ------               -------         ---------                
+my-awesome-app  #101       Feat: Add amazing new login page                   jane-doe             2023-10-27      dev-team,john-smith      
+our-cool-service #42        Fix: Correct the data processing pipeline          another-dev          2023-10-26      jane-doe                 
+..
+
+Scanning repositories for undeleted branches from merged PRs...
+.
+--- 🌿 PRs with Undeleted Branches ---
+REPO            #PR        BRANCH NAME                              TITLE                     MERGED BY            MERGED AT           
+----            ---        -----------                              -----                     ---------            ---------           
+my-awesome-app  #95        feature/old-login-logic                  Old Login Logic           jane-doe             2023-10-15          
+the-best-library #12        fix/bug-in-calculation                   Fix calculation bug       another-dev          2023-09-01          
+.
+
+--- Report Summary ---
+🔍 Total PRs Awaiting Review: 2
+🌿 Total PRs with Undeleted Branches: 2
+
+✅ HTML report has been generated successfully!
+ℹ️ File location: /home/user/github_report_2023-10-27.html
+```
+
+# The Generated HTML File
+
+When you open the .html file generated by the script, you will see a clean, professional-looking report with tables and links, ready to be viewed in a browser or sent via email.
+
+
+
+
+
