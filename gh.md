@@ -25,6 +25,9 @@ set -o pipefail # The return value of a pipeline is the status of the last comma
 #  CONFIGURATIONS - PLEASE EDIT THESE VALUES
 # =================================================================================
 
+# gh auth status --hostname github.my-company-internal.com
+# gh auth login --hostname github.my-company-internal.com
+
 ## NEW ##
 # 0. Set your GitHub Enterprise hostname (e.g., github.your-company.com)
 #    DO NOT include "https://" or a trailing slash.
