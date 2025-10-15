@@ -114,13 +114,14 @@ process_review_prs() {
     while IFS=$'\t' read -r number title url author created_at_iso reviewers; do
         if ! $repo_header_printed; then
             echo -e "${CYAN}${T_BORDER}${H_BORDER}${H_BORDER} [${repo_short_name}] ${H_BORDER}"
-            printf "${CYAN}${V_BORDER}${NC} %-9s %-45s %-20s %-25s\n" "PR #" "Title" "Author" "Reviewers"
-            echo -e "${CYAN}${M_BORDER}─────────────────────────────────────────────────────────────────────────────────────────────────"
+            ## MODIFIED ##: Added "Repo" column to the console header.
+            printf "${CYAN}${V_BORDER}${NC} %-20s %-9s %-40s %-20s %-25s\n" "Repo" "PR #" "Title" "Author" "Reviewers"
+            echo -e "${CYAN}${M_BORDER}─────────────────────────────────────────────────────────────────────────────────────────────────────────────"
             repo_header_printed=true
         fi
-        printf "${CYAN}${V_BORDER}${NC} ${YELLOW}#%-8s${NC} %-45.45s %-20s ${RED}%-25.25s${NC}\n" "$number" "$title" "$author" "$reviewers"
+        ## MODIFIED ##: Added the repo name variable to the console data row.
+        printf "${CYAN}${V_BORDER}${NC} %-20.20s ${YELLOW}#%-8s${NC} %-40.40s %-20s ${RED}%-25.25s${NC}\n" "$repo_short_name" "$number" "$title" "$author" "$reviewers"
         local days_open_html=$(get_days_open_html "$created_at_iso")
-        ## MODIFIED ##: Added $repo_short_name to the beginning of the row data.
         local -a row=("$repo_short_name" "$days_open_html" "#${number}" "$title" "$author" "$reviewers" "$url")
         add_html_row "$HTML_OUTPUT_FILE" "${row[@]}"; count=$((count + 1))
     done <<< "$prs"
@@ -156,7 +157,7 @@ main() {
     repo_list=$(get_repo_list); if [[ -z "$repo_list" ]]; then echo -e "${RED}${EMOJI_ERROR} No repositories found.${NC}"; exit 1; fi
     init_html "$HTML_OUTPUT_FILE"
     echo -e "\n${BLUE}Scanning for Pull Requests Awaiting Review...${NC}"; add_html_section_header "${EMOJI_REVIEW}" "Pull Requests Awaiting Review" "$HTML_OUTPUT_FILE"
-    ## MODIFIED ##: Added "Repo" to the beginning of the headers.
+    ## MODIFIED ##: Added "Repo" to the HTML headers array.
     declare -a headers_review=("Repo" "Days Open" "#PR" "Title" "Author" "Reviewers" "Link")
     start_html_table "$HTML_OUTPUT_FILE" "${headers_review[@]}"; while IFS= read -r repo; do process_review_prs "${ORG_NAME}/${repo}"; done <<< "$repo_list"
     if [[ $TOTAL_PRS_AWAITING_REVIEW -eq 0 ]]; then echo -e "${GREEN}No open PRs found.${NC}"; add_html_empty_state "No open PRs awaiting review found. Great job!" "$HTML_OUTPUT_FILE"; fi; end_html_table "$HTML_OUTPUT_FILE"; add_html_summary "Total PRs Awaiting Review" "$TOTAL_PRS_AWAITING_REVIEW" "$HTML_OUTPUT_FILE"
