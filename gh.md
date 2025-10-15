@@ -59,15 +59,38 @@ check_dependencies() {
   echo -e "${GREEN}${EMOJI_SUCCESS} All dependencies are met and logged into ${GHE_HOSTNAME}.${NC}\n"
 }
 
-# --- Functions for HTML Generation (SYNTAX CORRECTED) ---
+# --- Functions for HTML Generation ---
 init_html() {
 cat <<EOF > "$1"
 <!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>GitHub Pull Request Report for ${ORG_NAME}</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif;line-height:1.6;color:#333;margin:0;padding:20px;background-color:#f9f9f9}.container{max-width:1200px;margin:auto;background:#fff;padding:25px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}h1,h2{border-bottom:2px solid #eee;padding-bottom:10px;margin-top:30px;color:#1a1a1a}h1{font-size:2em}h2{font-size:1.5em}table{border-collapse:collapse;width:100%;margin-top:20px}th,td{border:1px solid #ddd;padding:12px;text-align:left}th{background-color:#f2f2f2;font-weight:bold}tr:nth-child(even){background-color:#f9f9f9}tr:hover{background-color:#f1f1f1}a{color:#0366d6;text-decoration:none}a:hover{text-decoration:underline}.footer{text-align:center;margin-top:30px;font-size:0.9em;color:#777}.empty-state{padding:20px;text-align:center;color:#888;background-color:#fafafa;border:1px dashed #ddd}.total-count{font-weight:bold;font-size:1.2em}</style></head><body><div class="container"><h1>${EMOJI_REVIEW} GitHub PR Report for ${ORG_NAME}</h1><p>Generated on: $(date)</p>
 EOF
 }
+## FIX ##: Modified functions to take array arguments more robustly
+start_html_table() {
+    local outfile=$1
+    shift
+    local headers=("$@")
+    echo "<table><thead><tr>" >> "$outfile"
+    for header in "${headers[@]}"; do
+        echo "<th>${header}</th>" >> "$outfile"
+    done
+    echo "</tr></thead><tbody>" >> "$outfile"
+}
+add_html_row() {
+    local outfile=$1
+    shift
+    local cells=("$@")
+    echo "<tr>" >> "$outfile"
+    for cell in "${cells[@]}"; do
+        if [[ "$cell" == http* ]]; then
+            echo "<td><a href=\"$cell\" target=\"_blank\">Link</a></td>" >> "$outfile"
+        else
+            echo "<td>${cell}</td>" >> "$outfile"
+        fi
+    done
+    echo "</tr>" >> "$outfile"
+}
 add_html_section_header() { echo "<h2>$1 $2</h2>" >> "$3"; }
-start_html_table() { echo "<table><thead><tr>" >> "$2"; for header in "${!1}"; do echo "<th>${header}</th>" >> "$2"; done; echo "</tr></thead><tbody>" >> "$2"; }
-add_html_row() { echo "<tr>" >> "$2"; for cell in "${!1}"; do if [[ "$cell" == http* ]]; then echo "<td><a href=\"$cell\" target=\"_blank\">Link</a></td>" >> "$2"; else echo "<td>${cell}</td>" >> "$2"; fi; done; echo "</tr>" >> "$2"; }
 end_html_table() { echo "</tbody></table>" >> "$1"; }
 add_html_empty_state() { echo "<div class='empty-state'>$1</div>" >> "$2"; }
 add_html_summary() { echo "<p class='total-count'>$1: $2</p>" >> "$3"; }
@@ -77,8 +100,7 @@ cat <<EOF >> "$1"
 EOF
 }
 
-
-# --- NEW FUNCTION for calculating days open ---
+# --- FUNCTION for calculating days open ---
 get_days_open_html() {
     local created_at_iso="$1"
     local pr_timestamp=$(date -d "$created_at_iso" +%s)
@@ -91,7 +113,6 @@ get_days_open_html() {
     fi
     echo "$days_open days $emoji"
 }
-
 
 # --- Core Logic Functions ---
 get_repo_list() {
@@ -113,7 +134,7 @@ process_review_prs() {
 
     local prs
     prs=$(echo "$pr_list_json" | jq -r '.[] | [
-        .number, .title, .url, .author.login, .createdAt, # Keep ISO date for calculation
+        .number, .title, .url, .author.login, .createdAt,
         ([.reviewRequests[].requestedReviewer.login] | join(", ")) // "None"
     ] | @tsv')
 
@@ -126,16 +147,18 @@ process_review_prs() {
         if ! $repo_header_printed; then
             repo_short_name=$(basename "$repo_full_name")
             echo -e "${CYAN}${T_BORDER}${H_BORDER}${H_BORDER} [${repo_short_name}] ${H_BORDER}"
-            printf "${CYAN}${V_BORDER}${NC} %-9s %-50s %-20s %-25s\n" "PR #" "Title" "Author" "Reviewers"
-            echo -e "${CYAN}${M_BORDER}────────────────────────────────────────────────────────────────────────────────────────────────────"
+            printf "${CYAN}${V_BORDER}${NC} %-9s %-45s %-20s %-25s\n" "PR #" "Title" "Author" "Reviewers"
+            echo -e "${CYAN}${M_BORDER}─────────────────────────────────────────────────────────────────────────────────────────────────"
             repo_header_printed=true
         fi
         
-        printf "${CYAN}${V_BORDER}${NC} ${YELLOW}#%-8s${NC} %-50.50s %-20s ${RED}%-25.25s${NC}\n" "$number" "$title" "$author" "$reviewers"
+        ## FIX ##: Corrected printf format string to include all four variables.
+        printf "${CYAN}${V_BORDER}${NC} ${YELLOW}#%-8s${NC} %-45.45s %-20s ${RED}%-25.25s${NC}\n" "$number" "$title" "$author" "$reviewers"
 
         local days_open_html=$(get_days_open_html "$created_at_iso")
+        ## FIX ##: The order of this array now perfectly matches the header array in main()
         local -a row=("$days_open_html" "#${number}" "$title" "$author" "$reviewers" "$url")
-        add_html_row row[@] "$HTML_OUTPUT_FILE"
+        add_html_row "$HTML_OUTPUT_FILE" "${row[@]}"
         count=$((count + 1))
     done <<< "$prs"
     
@@ -172,7 +195,7 @@ process_undeleted_branches() {
             
             printf "${CYAN}${V_BORDER}${NC} ${YELLOW}#%-8s${NC} ${RED}%-40.40s${NC} %-20s %-15s\n" "$pr_number" "$branch_name" "$merged_by" "$merged_at"
             local -a row=("$repo_short_name" "#${pr_number}" "$branch_name" "$title" "$merged_by" "$merged_at" "$url")
-            add_html_row row[@] "$HTML_OUTPUT_FILE"
+            add_html_row "$HTML_OUTPUT_FILE" "${row[@]}"
             count=$((count + 1))
         fi
     done <<< "$prs_to_check"
@@ -197,8 +220,9 @@ main() {
     # --- Section 1: PRs Awaiting Review ---
     echo -e "\n${BLUE}Scanning for Pull Requests Awaiting Review...${NC}"
     add_html_section_header "${EMOJI_REVIEW}" "Pull Requests Awaiting Review" "$HTML_OUTPUT_FILE"
-    declare -A headers_review=( ["Days Open"]="Days Open" ["#PR"]="#PR" ["Title"]="Title" ["Author"]="Author" ["Reviewers"]="Reviewers" ["Link"]="Link" )
-    start_html_table headers_review[@] "$HTML_OUTPUT_FILE"
+    ## FIX ##: Using a standard indexed array (declare -a) guarantees header order.
+    declare -a headers_review=("Days Open" "#PR" "Title" "Author" "Reviewers" "Link")
+    start_html_table "$HTML_OUTPUT_FILE" "${headers_review[@]}"
     while IFS= read -r repo; do process_review_prs "${ORG_NAME}/${repo}"; done <<< "$repo_list"
     
     if [[ $TOTAL_PRS_AWAITING_REVIEW -eq 0 ]]; then
@@ -211,8 +235,9 @@ main() {
     # --- Section 2: PRs with Undeleted Branches ---
     echo -e "\n${BLUE}Scanning for PRs with Undeleted Branches...${NC}"
     add_html_section_header "${EMOJI_BRANCH}" "PRs with Undeleted Branches" "$HTML_OUTPUT_FILE"
-    declare -A headers_branches=( ["Repo"]="Repo" ["#PR"]="#PR" ["Branch Name"]="Branch Name" ["Title"]="Title" ["Merged By"]="Merged By" ["Merged At"]="Merged At" ["Link"]="Link" )
-    start_html_table headers_branches[@] "$HTML_OUTPUT_FILE"
+    ## FIX ##: Using a standard indexed array (declare -a) guarantees header order.
+    declare -a headers_branches=("Repo" "#PR" "Branch Name" "Title" "Merged By" "Merged At" "Link")
+    start_html_table "$HTML_OUTPUT_FILE" "${headers_branches[@]}"
     while IFS= read -r repo; do process_undeleted_branches "${ORG_NAME}/${repo}"; done <<< "$repo_list"
 
     if [[ $TOTAL_UNDELETED_BRANCHES -eq 0 ]]; then
@@ -231,7 +256,6 @@ main() {
 }
 
 main
-
 
 
 
