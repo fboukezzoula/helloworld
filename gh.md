@@ -122,10 +122,10 @@ process_review_prs() {
         --search "-is:draft" 2>/dev/null)
 
     local prs
-    ## FIX ##: Changed join(", ") to join(" ") to remove the comma.
+    ## FIX ##: Correctly gets .login for users AND .name for teams.
     prs=$(echo "$pr_list_json" | jq -r '.[] | [
         .number, .title, .url, .author.login, .createdAt,
-        ([.reviewRequests[].requestedReviewer.login] | join(" ")) // "None"
+        ([.reviewRequests[].requestedReviewer | .login // .name] | join(" ")) // "None"
     ] | @tsv')
 
     if [[ -z "$prs" ]]; then return 0; fi
@@ -242,7 +242,6 @@ main() {
 }
 
 main
-
 
 
 
