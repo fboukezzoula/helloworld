@@ -1,3 +1,296 @@
+#!/bin/bash
+set -e # Exit immediately if a command exits with a non-zero status.
+set -o pipefail # The return value of a pipeline is the status of the last command to exit with a non-zero status.
+
+#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#
+#                                                              #
+#             GitHub Pull Request Health Report                #
+#                                                              #
+#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#_#
+
+# =================================================================================
+#  CONFIGURATIONS - PLEASE EDIT THESE VALUES
+# =================================================================================
+
+# 0. Set your GitHub Enterprise hostname (e.g., github.your-company.com)
+GHE_HOSTNAME="github.your-company.com"
+
+# 1. Set your GitHub Enterprise organization name.
+ORG_NAME="your-github-organization"
+
+# 2. Choose the scan mode: "org" or "list".
+SCAN_MODE="org"
+
+# 3. If using SCAN_MODE="list", define your repositories here.
+REPOS_ARRAY=(
+  "my-awesome-app"
+  "our-cool-service"
+  "the-best-library"
+)
+
+# 4. Set the threshold in days for highlighting old PRs.
+DAYS_THRESHOLD=7
+
+# 5. Set the output file for the HTML report.
+HTML_OUTPUT_FILE="github_report_$(date +%Y-%m-%d).html"
+
+# =================================================================================
+#  SCRIPT CORE - No need to edit below this line
+# =================================================================================
+
+# --- Colors and Emojis for Console Output ---
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+EMOJI_REVIEW="🔍"
+EMOJI_BRANCH="🌿"
+EMOJI_SUCCESS="✅"
+EMOJI_ERROR="❌"
+EMOJI_INFO="ℹ️"
+
+# --- Box Drawing Characters for Pretty Console Tables ---
+T_BORDER="┌"
+M_BORDER="├"
+L_BORDER="└"
+H_BORDER="─"
+V_BORDER="│"
+
+# --- Global Counters ---
+TOTAL_PRS_AWAITING_REVIEW=0
+TOTAL_UNDELETED_BRANCHES=0
+
+# --- Function to check for required commands ---
+check_dependencies() {
+  echo -e "${BLUE}Checking for required tools...${NC}"
+  if ! command -v gh &> /dev/null; then echo -e "${RED}${EMOJI_ERROR} 'gh' CLI is not installed.${NC}"; exit 1; fi
+  if ! command -v jq &> /dev/null; then echo -e "${RED}${EMOJI_ERROR} 'jq' is not installed.${NC}"; exit 1; fi
+  if ! command -v date &> /dev/null; then echo -e "${RED}${EMOJI_ERROR} 'date' command is not available.${NC}"; exit 1; fi
+  if ! gh auth status --hostname "$GHE_HOSTNAME" &> /dev/null; then
+      echo -e "${RED}${EMOJI_ERROR} You are not logged into '$GHE_HOSTNAME'.${NC}"
+      echo -e "${YELLOW}Please run: gh auth login --hostname ${GHE_HOSTNAME}${NC}"
+      exit 1
+  fi
+  echo -e "${GREEN}${EMOJI_SUCCESS} All dependencies are met and logged into ${GHE_HOSTNAME}.${NC}\n"
+}
+
+# --- Functions for HTML Generation ---
+# ... (HTML functions are unchanged, keeping them complete for copy-paste) ...
+init_html() {
+cat <<EOF > "$1"
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>GitHub Pull Request Report for ${ORG_NAME}</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif;line-height:1.6;color:#333;margin:0;padding:20px;background-color:#f9f9f9}.container{max-width:1200px;margin:auto;background:#fff;padding:25px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1)}h1,h2{border-bottom:2px solid #eee;padding-bottom:10px;margin-top:30px;color:#1a1a1a}h1{font-size:2em}h2{font-size:1.5em}table{border-collapse:collapse;width:100%;margin-top:20px}th,td{border:1px solid #ddd;padding:12px;text-align:left}th{background-color:#f2f2f2;font-weight:bold}tr:nth-child(even){background-color:#f9f9f9}tr:hover{background-color:#f1f1f1}a{color:#0366d6;text-decoration:none}a:hover{text-decoration:underline}.footer{text-align:center;margin-top:30px;font-size:0.9em;color:#777}.empty-state{padding:20px;text-align:center;color:#888;background-color:#fafafa;border:1px dashed #ddd}.total-count{font-weight:bold;font-size:1.2em}</style></head><body><div class="container"><h1>${EMOJI_REVIEW} GitHub PR Report for ${ORG_NAME}</h1><p>Generated on: $(date)</p>
+EOF
+}
+add_html_section_header() { echo "<h2>$1 $2</h2>" >> "$3"; }
+start_html_table() { echo "<table><thead><tr>" >> "$2"; for header in "${!1}"; do echo "<th>${header}</th>" >> "$2"; done; echo "</tr></thead><tbody>" >> "$2"; }
+add_html_row() { echo "<tr>" >> "$2"; for cell in "${!1}"; do if [[ "$cell" == http* ]]; then echo "<td><a href=\"$cell\" target=\"_blank\">Link</a></td>" >> "$2"; else echo "<td>${cell}</td>" >> "$2"; fi; done; echo "</tr>" >> "$2"; }
+end_html_table() { echo "</tbody></table>" >> "$1"; }
+add_html_empty_state() { echo "<div class='empty-state'>$1</div>" >> "$2"; }
+add_html_summary() { echo "<p class='total-count'>$1: $2</p>" >> "$3"; }
+finalize_html() { cat <<EOF >> "$1"; <div class="footer"><p>Report generated by the GitHub PR Health Script.</p></div></div></body></html>; EOF; }
+
+
+# --- NEW FUNCTION for calculating days open ---
+get_days_open_html() {
+    local created_at_iso="$1"
+    # GNU date is required for '-d' to parse ISO 8601 date
+    local pr_timestamp
+    pr_timestamp=$(date -d "$created_at_iso" +%s)
+    local now_timestamp
+    now_timestamp=$(date +%s)
+    
+    local seconds_diff=$((now_timestamp - pr_timestamp))
+    local days_open=$((seconds_diff / 86400)) # 86400 seconds in a day
+
+    local emoji="🔵"
+    if [ "$days_open" -gt "$DAYS_THRESHOLD" ]; then
+        emoji="🔴"
+    fi
+    
+    echo "$days_open days $emoji"
+}
+
+
+# --- Core Logic Functions ---
+get_repo_list() {
+    if [[ "$SCAN_MODE" == "org" ]]; then
+        echo -e "${BLUE}Fetching all repositories for organization: ${ORG_NAME}...${NC}"
+        gh repo list "$ORG_NAME" --limit 1000 --json name --jq '.[].name'
+    else
+        echo -e "${BLUE}Using predefined list of repositories...${NC}"
+        printf '%s\n' "${REPOS_ARRAY[@]}"
+    fi
+}
+
+process_review_prs() {
+    local repo_full_name="$1"
+    
+    local pr_list_json
+    pr_list_json=$(gh pr list -R "$repo_full_name" --state open --limit 100 \
+        --json number,title,url,author,createdAt,reviewRequests \
+        --search "-is:draft" 2>/dev/null)
+
+    local prs
+    prs=$(echo "$pr_list_json" | jq -r '.[] | [
+        .number,
+        .title,
+        .url,
+        .author.login,
+        .createdAt, # Keep the original ISO format for calculation
+        ([.reviewRequests[].requestedReviewer.login] | join(", ")) // "None"
+    ] | @tsv')
+
+    if [[ -z "$prs" ]]; then return 0; fi
+
+    local count=0
+    local repo_header_printed=false
+    
+    while IFS=$'\t' read -r number title url author created_at_iso reviewers; do
+        if ! $repo_header_printed; then
+            repo_short_name=$(basename "$repo_full_name")
+            echo -e "${CYAN}${T_BORDER}${H_BORDER}${H_BORDER} [${repo_short_name}] ${H_BORDER}${NC}"
+            echo -e "${CYAN}${V_BORDER}${NC} ${YELLOW}#PR${NC}        ${YELLOW}Title${NC}                                               ${YELLOW}Author${NC}              ${YELLOW}Reviewers${NC}"
+            echo -e "${CYAN}${M_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${NC}"
+            repo_header_printed=true
+        fi
+        
+        printf "${CYAN}${V_BORDER}${NC} %-9s %-50.50s %-20s ${RED}%-25s${NC}\n" "#${number}" "$title" "$author" "$reviewers"
+
+        # HTML Report Row - MODIFIED
+        local days_open_html
+        days_open_html=$(get_days_open_html "$created_at_iso")
+        local -a row=("$days_open_html" "#${number}" "$title" "$author" "$reviewers" "$url")
+        add_html_row row[@] "$HTML_OUTPUT_FILE"
+        
+        count=$((count + 1))
+    done <<< "$prs"
+    
+    if $repo_header_printed; then
+        echo -e "${CYAN}${L_BORDER}${H_BORDER}${H_BORDER}${NC}"
+    fi
+    
+    TOTAL_PRS_AWAITING_REVIEW=$((TOTAL_PRS_AWAITING_REVIEW + count))
+}
+
+process_undeleted_branches() {
+    local repo_full_name="$1"
+    local branches
+    branches=$(gh api "repos/$repo_full_name/branches" --paginate -q '.[].name' 2>/dev/null)
+    if [[ -z "$branches" ]]; then return 0; fi
+
+    local merged_prs_json
+    merged_prs_json=$(gh pr list -R "$repo_full_name" --state merged --limit 100 \
+        --json headRefName,number,title,url,mergedBy,mergedAt,isCrossRepository 2>/dev/null)
+
+    local prs_to_check
+    prs_to_check=$(echo "$merged_prs_json" | jq -r '.[] | select(.isCrossRepository == false)|[.headRefName,.number,.title,.url,.mergedBy.login,(.mergedAt|fromdate|strflocaltime("%Y-%m-%d"))]|@tsv')
+    if [[ -z "$prs_to_check" ]]; then return 0; fi
+    
+    local count=0
+    local repo_header_printed=false
+
+    while IFS=$'\t' read -r branch_name pr_number title url merged_by merged_at; do
+        if grep -q -x "$branch_name" <<< "$branches"; then
+            if ! $repo_header_printed; then
+                repo_short_name=$(basename "$repo_full_name")
+                echo -e "${CYAN}${T_BORDER}${H_BORDER}${H_BORDER} [${repo_short_name}] ${H_BORDER}${NC}"
+                echo -e "${CYAN}${V_BORDER}${NC} ${YELLOW}#PR${NC}        ${YELLOW}Branch Name${NC}                            ${YELLOW}Merged By${NC}           ${YELLOW}Merged At${NC}"
+                echo -e "${CYAN}${M_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${H_BORDER}${NC}"
+                repo_header_printed=true
+            fi
+            
+            printf "${CYAN}${V_BORDER}${NC} %-9s ${RED}%-40.40s${NC} %-20s %-20s\n" "#${pr_number}" "$branch_name" "$merged_by" "$merged_at"
+
+            local -a row=("$repo_short_name" "#${pr_number}" "$branch_name" "$title" "$merged_by" "$merged_at" "$url")
+            add_html_row row[@] "$HTML_OUTPUT_FILE"
+            count=$((count + 1))
+        fi
+    done <<< "$prs_to_check"
+
+    if $repo_header_printed; then
+        echo -e "${CYAN}${L_BORDER}${H_BORDER}${H_BORDER}${NC}"
+    fi
+    TOTAL_UNDELETED_BRANCHES=$((TOTAL_UNDELETED_BRANCHES + count))
+}
+
+# --- Main Execution ---
+main() {
+    export GH_HOST="$GHE_HOSTNAME"
+    check_dependencies
+    repo_list=$(get_repo_list)
+    if [[ -z "$repo_list" ]]; then
+      echo -e "${RED}${EMOJI_ERROR} No repositories found. Please check ORG_NAME or REPOS_ARRAY.${NC}"
+      exit 1
+    fi
+
+    init_html "$HTML_OUTPUT_FILE"
+
+    # --- Section 1: PRs Awaiting Review ---
+    echo -e "\n${BLUE}${EMOJI_REVIEW} Scanning for Pull Requests Awaiting Review...${NC}"
+    add_html_section_header "${EMOJI_REVIEW}" "Pull Requests Awaiting Review" "$HTML_OUTPUT_FILE"
+    declare -A headers_review=(
+        ["Days Open"]="Days Open" ["#PR"]="#PR" ["Title"]="Title" ["Author"]="Author" 
+        ["Reviewers"]="Reviewers" ["Link"]="Link"
+    )
+    start_html_table headers_review[@] "$HTML_OUTPUT_FILE"
+
+    while IFS= read -r repo; do process_review_prs "${ORG_NAME}/${repo}"; done <<< "$repo_list"
+    
+    if [[ $TOTAL_PRS_AWAITING_REVIEW -eq 0 ]]; then
+        echo -e "${GREEN}No open PRs awaiting review found.${NC}"
+        add_html_empty_state "No open PRs awaiting review found. Great job!" "$HTML_OUTPUT_FILE"
+    fi
+    end_html_table "$HTML_OUTPUT_FILE"
+    add_html_summary "Total PRs Awaiting Review" "$TOTAL_PRS_AWAITING_REVIEW" "$HTML_OUTPUT_FILE"
+
+    # --- Section 2: PRs with Undeleted Branches ---
+    echo -e "\n${BLUE}${EMOJI_BRANCH} Scanning for PRs with Undeleted Branches...${NC}"
+    add_html_section_header "${EMOJI_BRANCH}" "PRs with Undeleted Branches" "$HTML_OUTPUT_FILE"
+    declare -A headers_branches=(
+        ["Repo"]="Repo" ["#PR"]="#PR" ["Branch Name"]="Branch Name" ["Title"]="Title" 
+        ["Merged By"]="Merged By" ["Merged At"]="Merged At" ["Link"]="Link"
+    )
+    start_html_table headers_branches[@] "$HTML_OUTPUT_FILE"
+
+    while IFS= read -r repo; do process_undeleted_branches "${ORG_NAME}/${repo}"; done <<< "$repo_list"
+
+    if [[ $TOTAL_UNDELETED_BRANCHES -eq 0 ]]; then
+        echo -e "${GREEN}No PRs with undeleted branches found.${NC}"
+        add_html_empty_state "No merged PRs with undeleted branches were found. Excellent branch hygiene!" "$HTML_OUTPUT_FILE"
+    fi
+    end_html_table "$HTML_OUTPUT_FILE"
+    add_html_summary "Total PRs with Undeleted Branches" "$TOTAL_UNDELETED_BRANCHES" "$HTML_OUTPUT_FILE"
+
+    finalize_html "$HTML_OUTPUT_FILE"
+
+    echo -e "\n${GREEN}--- Report Summary ---${NC}"
+    echo -e "${EMOJI_REVIEW} Total PRs Awaiting Review: ${YELLOW}${TOTAL_PRS_AWAITING_REVIEW}${NC}"
+    echo -e "${EMOJI_BRANCH} Total PRs with Undeleted Branches: ${YELLOW}${TOTAL_UNDELETED_BRANCHES}${NC}"
+    echo -e "\n${EMOJI_SUCCESS} ${GREEN}HTML report has been generated successfully!${NC}"
+    echo -e "${CYAN}File location: $(pwd)/${HTML_OUTPUT_FILE}${NC}"
+}
+
+main
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # Features of this Script:
 - Two Modes: Scan all repositories in an organization or a specific list of repositories.
 - Beautiful Console Output: Uses colors, emojis, and formatted tables with printf.
