@@ -12,38 +12,20 @@ set -o pipefail # The return value of a pipeline is the status of the last comma
 #  CONFIGURATIONS - PLEASE EDIT THESE VALUES
 # =================================================================================
 
-# 0. Set your GitHub Enterprise hostname (e.g., github.your-company.com)
 GHE_HOSTNAME="github.your-company.com"
-
-# 1. Set your GitHub Enterprise organization name.
 ORG_NAME="your-github-organization"
-
-# 2. Choose the scan mode: "org" or "list".
 SCAN_MODE="org"
-
-# 3. If using SCAN_MODE="list", define your repositories here.
-REPOS_ARRAY=(
-  "my-awesome-app"
-  "our-cool-service"
-  "the-best-library"
-)
-
-# 4. Set the threshold in days for highlighting old PRs.
+REPOS_ARRAY=( "my-awesome-app" "our-cool-service" "the-best-library" )
 DAYS_THRESHOLD=7
-
-# 5. Set the output file for the HTML report.
 HTML_OUTPUT_FILE="github_report_$(date +%Y-%m-%d).html"
 
 # =================================================================================
 #  EMAIL CONFIGURATIONS (Python based)
 # =================================================================================
-SEND_EMAIL="true" # Set to "true" to enable email sending, "false" to disable.
+SEND_EMAIL="true"
 SMTP_SERVER="smtp.your-company.com:25"
-
-## NEW/MODIFIED: Split From address for robustness ##
-EMAIL_FROM_NAME="GitHub Reporter" # The display name
-EMAIL_FROM_ADDR="no-reply@your-company.com" # The actual email address
-
+EMAIL_FROM_NAME="GitHub Reporter"
+EMAIL_FROM_ADDR="no-reply@your-company.com"
 EMAIL_TO="dev-team@your-company.com,another-dev@company.com"
 EMAIL_CC="engineering-manager@your-company.com"
 
@@ -105,23 +87,23 @@ RECIPIENTS_TO = [addr.strip() for addr in sys.argv[4].split(',') if addr.strip()
 RECIPIENTS_CC = [addr.strip() for addr in sys.argv[5].split(',') if addr.strip()]
 SUBJECT = sys.argv[6]
 
-# --- Read HTML body from standard input ---
 HTML_BODY = sys.stdin.read()
 
-# --- Debugging: Print what we are about to do ---
-print("--- Python Mailer Debug ---")
-print(f"SMTP Server: {SMTP_SERVER}")
-print(f"From: {SENDER_NAME} <{SENDER_ADDR}>")
-print(f"To: {RECIPIENTS_TO}")
-print(f"Cc: {RECIPIENTS_CC}")
-print(f"Subject: {SUBJECT}")
-print(f"HTML Body Length: {len(HTML_BODY)} characters")
-print("---------------------------")
+## MODIFIED: All debug output now goes to stderr to avoid interfering with other processes. ##
+def log_debug(message):
+    print(message, file=sys.stderr)
+
+log_debug("--- Python Mailer Debug ---")
+log_debug(f"SMTP Server: {SMTP_SERVER}")
+log_debug(f"From: {SENDER_NAME} <{SENDER_ADDR}>")
+log_debug(f"To: {RECIPIENTS_TO}")
+log_debug(f"Cc: {RECIPIENTS_CC}")
+log_debug(f"Subject: {SUBJECT}")
+log_debug("---------------------------")
 
 # --- Create the email message ---
 msg = MIMEMultipart('alternative')
 msg['Subject'] = SUBJECT
-# Use formataddr for a correctly formatted 'From' header
 msg['From'] = formataddr((SENDER_NAME, SENDER_ADDR))
 msg['To'] = COMMASPACE.join(RECIPIENTS_TO)
 if RECIPIENTS_CC:
@@ -132,16 +114,12 @@ all_recipients = RECIPIENTS_TO + RECIPIENTS_CC
 
 # --- Send the email ---
 try:
-    print("Connecting to SMTP server...")
+    log_debug("Connecting to SMTP server...")
     with smtplib.SMTP(SMTP_SERVER) as server:
-        # If your SMTP server requires TLS, uncomment the next line
-        # server.starttls()
-        # If your SMTP server requires authentication, uncomment the next lines
-        # server.login('your-username', 'your-password')
         server.send_message(msg)
-    print("Python: Email sent successfully!")
+    log_debug("Python: Email sent successfully!")
 except Exception as e:
-    print(f"Python: Failed to send email. Error: {e}", file=sys.stderr)
+    log_debug(f"Python: Failed to send email. Error: {e}")
     sys.exit(1)
 EOF
     chmod +x "$PYTHON_MAILER_SCRIPT"
@@ -158,14 +136,16 @@ send_email_report() {
     local html_file="$1"
     local subject="GitHub PR Health Report - $(date +'%Y-%m-%d')"
     echo -e "\n${BLUE}Sending email report to '$EMAIL_TO' using Python...${NC}"
-    # Call the python script with the new arguments
-    python3 "$PYTHON_MAILER_SCRIPT" \
+
+    ## MODIFIED: Added the -u flag to force unbuffered output from Python ##
+    python3 -u "$PYTHON_MAILER_SCRIPT" \
         "$SMTP_SERVER" \
         "$EMAIL_FROM_NAME" \
         "$EMAIL_FROM_ADDR" \
         "$EMAIL_TO" \
         "$EMAIL_CC" \
         "$subject" < "$html_file"
+
     echo -e "${GREEN}${EMOJI_SUCCESS} Email sending process completed.${NC}"
 }
 
@@ -180,16 +160,10 @@ main() {
     export GH_HOST="$GHE_HOSTNAME"; check_dependencies; create_python_mailer
     repo_list=$(get_repo_list); if [[ -z "$repo_list" ]]; then echo -e "${RED}${EMOJI_ERROR} No repositories found.${NC}"; exit 1; fi
     init_html "$HTML_OUTPUT_FILE"
-    echo -e "\n${BLUE}Scanning for Pull Requests Awaiting Review...${NC}"
-    add_html_section_header "${EMOJI_REVIEW}" "Pull Requests Awaiting Review" "$HTML_OUTPUT_FILE"; declare -a headers_review=("Days Open" "#PR" "Title" "Author" "Reviewers" "Link")
-    start_html_table "$HTML_OUTPUT_FILE" "${headers_review[@]}"; while IFS= read -r repo; do process_review_prs "${ORG_NAME}/${repo}"; done <<< "$repo_list"
-    if [[ $TOTAL_PRS_AWAITING_REVIEW -eq 0 ]]; then echo -e "${GREEN}No open PRs awaiting review found.${NC}"; add_html_empty_state "Great job!" "$HTML_OUTPUT_FILE"; fi
-    end_html_table "$HTML_OUTPUT_FILE"; add_html_summary "Total PRs Awaiting Review" "$TOTAL_PRS_AWAITING_REVIEW" "$HTML_OUTPUT_FILE"
-    echo -e "\n${BLUE}Scanning for PRs with Undeleted Branches...${NC}"
-    add_html_section_header "${EMOJI_BRANCH}" "PRs with Undeleted Branches" "$HTML_OUTPUT_FILE"; declare -a headers_branches=("Repo" "#PR" "Branch Name" "Title" "Merged By" "Merged At" "Link")
-    start_html_table "$HTML_OUTPUT_FILE" "${headers_branches[@]}"; while IFS= read -r repo; do process_undeleted_branches "${ORG_NAME}/${repo}"; done <<< "$repo_list"
-    if [[ $TOTAL_UNDELETED_BRANCHES -eq 0 ]]; then echo -e "${GREEN}No PRs with undeleted branches found.${NC}"; add_html_empty_state "Excellent branch hygiene!" "$HTML_OUTPUT_FILE"; fi
-    end_html_table "$HTML_OUTPUT_FILE"; add_html_summary "Total PRs with Undeleted Branches" "$TOTAL_UNDELETED_BRANCHES" "$HTML_OUTPUT_FILE"
+    echo -e "\n${BLUE}Scanning for Pull Requests Awaiting Review...${NC}"; add_html_section_header "${EMOJI_REVIEW}" "Pull Requests Awaiting Review" "$HTML_OUTPUT_FILE"; declare -a headers_review=("Days Open" "#PR" "Title" "Author" "Reviewers" "Link"); start_html_table "$HTML_OUTPUT_FILE" "${headers_review[@]}"; while IFS= read -r repo; do process_review_prs "${ORG_NAME}/${repo}"; done <<< "$repo_list"
+    if [[ $TOTAL_PRS_AWAITING_REVIEW -eq 0 ]]; then echo -e "${GREEN}No open PRs awaiting review found.${NC}"; add_html_empty_state "Great job!" "$HTML_OUTPUT_FILE"; fi; end_html_table "$HTML_OUTPUT_FILE"; add_html_summary "Total PRs Awaiting Review" "$TOTAL_PRS_AWAITING_REVIEW" "$HTML_OUTPUT_FILE"
+    echo -e "\n${BLUE}Scanning for PRs with Undeleted Branches...${NC}"; add_html_section_header "${EMOJI_BRANCH}" "PRs with Undeleted Branches" "$HTML_OUTPUT_FILE"; declare -a headers_branches=("Repo" "#PR" "Branch Name" "Title" "Merged By" "Merged At" "Link"); start_html_table "$HTML_OUTPUT_FILE" "${headers_branches[@]}"; while IFS= read -r repo; do process_undeleted_branches "${ORG_NAME}/${repo}"; done <<< "$repo_list"
+    if [[ $TOTAL_UNDELETED_BRANCHES -eq 0 ]]; then echo -e "${GREEN}No PRs with undeleted branches found.${NC}"; add_html_empty_state "Excellent branch hygiene!" "$HTML_OUTPUT_FILE"; fi; end_html_table "$HTML_OUTPUT_FILE"; add_html_summary "Total PRs with Undeleted Branches" "$TOTAL_UNDELETED_BRANCHES" "$HTML_OUTPUT_FILE"
     finalize_html "$HTML_OUTPUT_FILE"
     echo -e "\n${GREEN}--- Report Summary ---${NC}"; echo -e "${EMOJI_REVIEW} Total PRs Awaiting Review: ${YELLOW}${TOTAL_PRS_AWAITING_REVIEW}${NC}"; echo -e "${EMOJI_BRANCH} Total PRs with Undeleted Branches: ${YELLOW}${TOTAL_UNDELETED_BRANCHES}${NC}"
     echo -e "\n${EMOJI_SUCCESS} ${GREEN}HTML report generated: ${CYAN}$(pwd)/${HTML_OUTPUT_FILE}${NC}"
