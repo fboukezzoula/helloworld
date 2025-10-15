@@ -99,14 +99,28 @@ send_email_report() {
 
 # --- Core Logic Functions ---
 get_days_open_html() { local created_at_iso="$1"; local pr_timestamp=$(date -d "$created_at_iso" +%s); local now_timestamp=$(date +%s); local seconds_diff=$((now_timestamp - pr_timestamp)); local days_open=$((seconds_diff / 86400)); local emoji="🔵"; if [ "$days_open" -gt "$DAYS_THRESHOLD" ]; then emoji="🔴"; fi; echo "$days_open days $emoji"; }
-get_repo_list() { if [[ "$SCAN_MODE" == "org" ]]; then echo -e "${BLUE}Fetching repositories...${NC}"; gh repo list "$ORG_NAME" --limit 1000 --json name --jq '.[].name'; else echo -e "${BLUE}Using predefined repository list...${NC}"; printf '%s\n' "${REPOS_ARRAY[@]}"; fi; }
+
+## MODIFIED: This function is now fixed. ##
+get_repo_list() {
+    if [[ "$SCAN_MODE" == "org" ]]; then
+        ## FIX: Redirect status message to stderr so it's not captured by the variable. ##
+        echo -e "${BLUE}Fetching all repositories...${NC}" >&2
+        gh repo list "$ORG_NAME" --limit 1000 --json name --jq '.[].name'
+    else
+        ## FIX: Redirect status message to stderr so it's not captured by the variable. ##
+        echo -e "${BLUE}Using predefined repository list...${NC}" >&2
+        printf '%s\n' "${REPOS_ARRAY[@]}"
+    fi
+}
 
 process_review_prs() {
     local repo_full_name="$1"
     local pr_list_json
-    pr_list_json=$(gh pr list -R "$repo_full_name" --state open --limit 100 --json number,title,url,author,createdAt,reviewRequests --search "-is:draft" 2>/dev/null)
+    pr_list_json=$(gh pr list -R "$repo_full_name" --state open --limit 100 --json number,title,url,author,createdAt,reviewRequests --search "-is:draft")
     local prs
-    prs=$(echo "$pr_list_json" | jq -r '.[] | [.number, .title, .url, .author.login, .createdAt, ([.reviewRequests[]? | .login // .name] | join(" ")) // "None"] | @tsv')
+    if [[ -n "$pr_list_json" ]]; then
+        prs=$(echo "$pr_list_json" | jq -r '.[] | [.number, .title, .url, .author.login, .createdAt, ([.reviewRequests[]? | .login // .name] | join(" ")) // "None"] | @tsv')
+    fi
     if [[ -z "$prs" ]]; then return 0; fi
     local count=0; local repo_header_printed=false
     while IFS=$'\t' read -r number title url author created_at_iso reviewers; do
@@ -125,27 +139,18 @@ process_review_prs() {
     TOTAL_PRS_AWAITING_REVIEW=$((TOTAL_PRS_AWAITING_REVIEW + count))
 }
 
-## MODIFIED: This function is now more robust and will show errors. ##
 process_undeleted_branches() {
     local repo_full_name="$1"
-    
-    ## DEBUG: Removed 2>/dev/null to show potential errors from gh api ##
     local branches
     branches=$(gh api "repos/$repo_full_name/branches" --paginate -q '.[].name')
     if [[ -z "$branches" ]]; then return 0; fi
-
-    ## DEBUG: Removed 2>/dev/null to show potential errors from gh pr list ##
     local merged_prs_json
     merged_prs_json=$(gh pr list -R "$repo_full_name" --state merged --limit 100 --json headRefName,number,title,url,mergedBy,mergedAt,isCrossRepository)
-
-    ## FIX: Check if JSON is empty before piping to jq to prevent a crash ##
     local prs_to_check=""
     if [[ -n "$merged_prs_json" ]]; then
         prs_to_check=$(echo "$merged_prs_json" | jq -r '.[] | select(.isCrossRepository == false) | [.headRefName, .number, .title, .url, .mergedBy.login, (.mergedAt|fromdate|strflocaltime("%Y-%m-%d"))] | @tsv')
     fi
-    
     if [[ -z "$prs_to_check" ]]; then return 0; fi
-
     local count=0; local repo_header_printed=false
     while IFS=$'\t' read -r branch_name pr_number title url merged_by merged_at; do
         if grep -q -x "$branch_name" <<< "$branches"; then
