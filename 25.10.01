@@ -141,7 +141,7 @@ def get_vnets_and_subnets(subscription_id, credential):
     return vnet_data
 
 def get_vnet_peerings(network_client, resource_group, vnet_name, config):
-    """Fetch peerings for a VNet and format the 'Peering check' string with new lines for each peering"""
+    """Fetch peerings for a VNet and format the 'Peering check' string"""
     peering_config = config.get('peering', {})
     if not peering_config.get('enabled', True):
         return "Peering check disabled"
@@ -167,12 +167,12 @@ def get_vnet_peerings(network_client, resource_group, vnet_name, config):
             
             peering_strs.append(f"name: {peering.name} - {sync_status} {sync_ok} - Peering state {state} {state_ok}")
         
-        return "\n".join(peering_strs)  # Use new line for each peering
+        return "; ".join(peering_strs)
     except Exception as e:
         logger.warning(f"Error fetching peerings for VNet {vnet_name}: {str(e)}")
         return "Error fetching peerings"
 
-def get_or_create_rir(nb, name, slug, description, is_private=False, tags=None):
+def get_or_create_rir(nb, name, slug, description, is_private=False):
     try:
         rir = nb.ipam.rirs.get(slug=slug)
         if rir:
@@ -182,13 +182,11 @@ def get_or_create_rir(nb, name, slug, description, is_private=False, tags=None):
         logger.debug(f"Error getting RIR {name}: {str(e)}")
     
     logger.info(f"Creating new RIR: {name}")
-    tag_dicts = tags or []
     return nb.ipam.rirs.create(
         name=name,
         slug=slug,
         description=description,
-        is_private=is_private,
-        tags=tag_dicts
+        is_private=is_private
     )
 
 def get_or_create_aggregate(nb, prefix, rir_id, description, tags):
@@ -208,31 +206,18 @@ def get_or_create_aggregate(nb, prefix, rir_id, description, tags):
         tags=tags
     )
 
-def clean_color(color_str, default="aaaaaa"):
-    """Clean and validate a color string (strip #, ensure 6 hex digits)"""
-    if not isinstance(color_str, str):
-        logger.warning(f"Invalid color type: {type(color_str)}; using default {default}")
-        return default
-    color_str = color_str.strip().lstrip('#').lower()
-    if re.match(r'^[0-9a-f]{6}$', color_str):
-        return color_str
-    logger.warning(f"Invalid color format '{color_str}'; using default {default}")
-    return default
-
 def get_or_create_tag(nb, tag_input, tag_description="", tag_color="aaaaaa"):
     if isinstance(tag_input, dict):
-        logger.debug("Tag input is a dict; extracting properties.")
         tag_name = tag_input.get('name')
         if not tag_name:
-            logger.error("Tag dict missing 'name' key; skipping this tag.")
-            return None  # Skip instead of raising to prevent crash
+            logger.error("Tag dict missing 'name' key; skipping.")
+            return None
         tag_description = tag_input.get('description', tag_description)
-        tag_color = clean_color(tag_input.get('color', tag_color))
+        tag_color = tag_input.get('color', tag_color)
     elif isinstance(tag_input, str):
         tag_name = tag_input
-        tag_color = clean_color(tag_color)  # Use passed or default
     else:
-        logger.error(f"Invalid tag_input type: {type(tag_input)}. Must be str or dict; skipping.")
+        logger.error(f"Invalid tag input: {tag_input}; skipping.")
         return None
 
     slug = tag_name.lower().replace(" ", "-")
@@ -248,24 +233,18 @@ def get_or_create_tag(nb, tag_input, tag_description="", tag_color="aaaaaa"):
                 needs_update = True
             if needs_update:
                 tag.save()
-                logger.info(f"Updated existing tag: {tag_name} (color: {tag_color})")
-            else:
-                logger.info(f"Found existing tag: {tag_name} (color: {tag.color})")
+            logger.info(f"Found/Updated tag: {tag_name} (color: {tag_color})")
             return tag
     except Exception as e:
         logger.debug(f"Error getting tag {tag_name}: {str(e)}")
     
     logger.info(f"Creating new tag: {tag_name} (color: {tag_color})")
-    try:
-        return nb.extras.tags.create(
-            name=tag_name,
-            slug=slug,
-            description=tag_description,
-            color=tag_color
-        )
-    except Exception as e:
-        logger.error(f"Failed to create tag {tag_name}: {str(e)}")
-        return None
+    return nb.extras.tags.create(
+        name=tag_name,
+        slug=slug,
+        description=tag_description,
+        color=tag_color
+    )
 
 def get_or_create_ipam_role(nb, name, slug, description, tags):
     try:
@@ -277,7 +256,7 @@ def get_or_create_ipam_role(nb, name, slug, description, tags):
         logger.debug(f"Error getting IPAM role {name}: {str(e)}")
     
     logger.info(f"Creating new IPAM role: {name}")
-    tag_dicts = [t for t in tags if isinstance(t, dict) and 'id' in t]  # Filter valid dicts
+    tag_dicts = [{'id': get_or_create_tag(nb, t).id} for t in tags if get_or_create_tag(nb, t)]
     return nb.ipam.roles.create(
         name=name,
         slug=slug,
@@ -301,14 +280,15 @@ def get_or_create_tenant_group(nb, name, slug, description=""):
         description=description
     )
 
-def get_or_create_tenant(nb, name, group_id, description="", tags=None):
-    slug = name.lower().replace(' ', '-')  # Generate slug from name (UUID is already suitable)
+def get_or_create_tenant(nb, name, group=None, description="", slug=None, tags=None):
+    if not slug:
+        slug = name.lower().replace(' ', '-')
     try:
         tenant = nb.tenancy.tenants.get(slug=slug)
         if tenant:
             needs_update = False
-            if tenant.group.id != group_id:
-                tenant.group = group_id
+            if tenant.group != group:
+                tenant.group = group
                 needs_update = True
             if tenant.description != description:
                 tenant.description = description
@@ -331,8 +311,8 @@ def get_or_create_tenant(nb, name, group_id, description="", tags=None):
     try:
         return nb.tenancy.tenants.create(
             name=name,
-            slug=slug,  # Required field
-            group=group_id,
+            slug=slug,
+            group=group,
             description=description,
             tags=tags or []
         )
@@ -364,7 +344,7 @@ def get_or_create_custom_field(nb, field_name, field_type, field_description, ob
 
     return nb.extras.custom_fields.create(**field_data)
 
-def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, subscription_id=None, aggregate_id=None, role_id=None, tenant_id=None, site_id=None, tags=None, status='active', is_pool=False):
+def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, subscription_id=None, aggregate_id=None, role_id=None, tenant_id=None, tags=None):
     try:
         existing_prefixes = nb.ipam.prefixes.filter(prefix=prefix_value)
         
@@ -374,7 +354,7 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
             
             needs_update = False
             for key, value in defaults.items():
-                if key == 'parent':  
+                if key == 'parent' or key == 'custom_fields':  
                     continue
                 current_value = getattr(prefix, key, None)
                 if current_value != value:
@@ -393,6 +373,17 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
                     needs_update = True
                     logger.debug(f"Forced update of azure_subscription to clean value: {azure_subscription_value}")
             
+            # Update peering_check if necessary
+            if 'custom_fields' in defaults and 'peering_check' in defaults['custom_fields']:
+                custom_fields = getattr(prefix, 'custom_fields', {}) or {}
+                new_peering = defaults['custom_fields']['peering_check']
+                current_peering = custom_fields.get('peering_check')
+                if current_peering != new_peering:
+                    custom_fields['peering_check'] = new_peering
+                    prefix.custom_fields = custom_fields
+                    needs_update = True
+                    logger.debug(f"Updated peering_check for {prefix_value} from '{current_peering}' to '{new_peering}'")
+            
             if aggregate_id and getattr(prefix, 'aggregate', None) != aggregate_id:
                 prefix.aggregate = aggregate_id
                 needs_update = True
@@ -405,20 +396,8 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
                 prefix.tenant = tenant_id
                 needs_update = True
             
-            if site_id and getattr(prefix, 'site', None) != site_id:
-                prefix.site = site_id
-                needs_update = True
-            
             if tags and set(tag.id for tag in prefix.tags) != set(tag['id'] for tag in tags):
                 prefix.tags = tags
-                needs_update = True
-            
-            if prefix.status != status:
-                prefix.status = status
-                needs_update = True
-            
-            if prefix.is_pool != is_pool:
-                prefix.is_pool = is_pool
                 needs_update = True
             
             if needs_update:
@@ -446,13 +425,8 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
             defaults['role'] = role_id
         if tenant_id:
             defaults['tenant'] = tenant_id
-        if site_id:
-            defaults['site'] = site_id
         if tags:
             defaults['tags'] = tags
-        
-        defaults['status'] = status
-        defaults['is_pool'] = is_pool
         
         return nb.ipam.prefixes.create(
             prefix=prefix_value,
@@ -471,25 +445,18 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
                 logger.error(f"Error retrieving duplicate prefix {prefix_value}: {str(inner_e)}")
         raise
 
-def2 setup_rirs_and_aggregates(nb, config):
+def setup_rirs_and_aggregates(nb, config):
     rirs_config = config.get('rirs', [])
     aggregates_config = config.get('aggregates', [])
     
     rir_map = {}
     for rir in rirs_config:
-        rir_tags = []
-        for tag_item in rir.get('tags', []):
-            tag = get_or_create_tag(nb, tag_item)
-            if tag:
-                rir_tags.append({'id': tag.id})
-        
         created_rir = get_or_create_rir(
             nb,
             name=rir.get('name'),
             slug=rir.get('slug'),
             description=rir.get('description', ''),
-            is_private=rir.get('is_private', False),
-            tags=rir_tags
+            is_private=rir.get('is_private', False)
         )
         rir_map[rir['name']] = created_rir.id
     
@@ -552,7 +519,7 @@ def setup_ipam_roles(nb, config):
 
 def setup_tenancy(nb, config, all_network_data):
     tenancy_config = config.get('tenancy', {})
-    groups_config = tenancy_config.get('groups', [])  # Note: Your config has 'group' (singular), but I assume it's a list; adjust if needed
+    groups_config = tenancy_config.get('groups', [])
     
     group_map = {}
     for group in groups_config:
@@ -562,20 +529,16 @@ def setup_tenancy(nb, config, all_network_data):
             slug=group.get('slug'),
             description=group.get('description', '')
         )
-        group_map[group['name']] = created_group.id
+        group_map[group['name']] = created_group
     
     default_group_name = tenancy_config.get('default_group', 'AZURE')
-    default_group_id = group_map.get(default_group_name)
-    if not default_group_id:
+    default_group = group_map.get(default_group_name)
+    if not default_group:
         logger.error(f"Default Tenant Group {default_group_name} not found")
         return {}, ''
     
     tenant_tag_names = tenancy_config.get('tenant_tags', [])
-    tenant_tags = []
-    for t in tenant_tag_names:
-        tag = get_or_create_tag(nb, t)
-        if tag:
-            tenant_tags.append({'id': tag.id})
+    tenant_tags = [{'id': get_or_create_tag(nb, t).id} for t in tenant_tag_names if get_or_create_tag(nb, t)]
     
     tenant_map = {}
     for sub_data in all_network_data:
@@ -585,7 +548,7 @@ def setup_tenancy(nb, config, all_network_data):
         created_tenant = get_or_create_tenant(
             nb,
             name=sub_id,
-            group_id=default_group_id,
+            group=default_group,
             description=sub_name,
             tags=tenant_tags
         )
@@ -655,274 +618,11 @@ def setup_custom_tags(nb, config):
 
         slug = tag_config.get('slug', name.lower().replace(" ", "-"))
         description = tag_config.get('description', "")
-        color = clean_color(tag_config.get('color', "aaaaaa"))
+        color = tag_config.get('color', "aaaaaa")  # Default gray if not specified
 
-        tag = get_or_create_tag(nb, {'name': name, 'description': description, 'color': color})
-        if not tag:
-            logger.warning(f"Failed to process custom tag '{name}'")
+        get_or_create_tag(nb, name, description, color)
 
     logger.info("Custom tags setup completed")
-
-def get_or_create_site_group(nb, name, slug=None, description=""):
-    slug = slug or name.lower().replace(" ", "-")
-    try:
-        group = nb.dcim.site_groups.get(slug=slug)
-        if group:
-            if group.description != description:
-                group.description = description
-                group.save()
-                logger.info(f"Updated Site Group: {name}")
-            else:
-                logger.info(f"Found existing Site Group: {name}")
-            return group
-    except Exception as e:
-        logger.debug(f"Error getting Site Group {name}: {str(e)}")
-    
-    logger.info(f"Creating new Site Group: {name}")
-    return nb.dcim.site_groups.create(
-        name=name,
-        slug=slug,
-        description=description
-    )
-
-def get_or_create_region(nb, name, slug, tags=None, description=""):
-    try:
-        region = nb.dcim.regions.get(slug=slug)
-        if region:
-            needs_update = False
-            if region.name != name:
-                region.name = name
-                needs_update = True
-            if region.description != description:
-                region.description = description
-                needs_update = True
-            if tags and set(tag.id for tag in region.tags) != set(tag['id'] for tag in tags):
-                region.tags = tags
-                needs_update = True
-            if needs_update:
-                region.save()
-                logger.info(f"Updated Region: {name} (slug: {slug})")
-            else:
-                logger.info(f"Found existing Region: {name} (slug: {slug})")
-            return region
-    except Exception as e:
-        logger.debug(f"Error getting Region {name}: {str(e)}")
-    
-    logger.info(f"Creating new Region: {name} (slug: {slug})")
-    return nb.dcim.regions.create(
-        name=name,
-        slug=slug,
-        description=description,
-        tags=tags or []
-    )
-
-def get_or_create_site(nb, name, slug, group_id=None, region_id=None, tenant_id=None, tags=None, status='active', description=""):
-    try:
-        site = nb.dcim.sites.get(slug=slug)
-        if site:
-            needs_update = False
-            if site.name != name:
-                site.name = name
-                needs_update = True
-            if site.group and site.group.id != group_id:
-                site.group = group_id
-                needs_update = True
-            if site.region and site.region.id != region_id:
-                site.region = region_id
-                needs_update = True
-            if tenant_id and (not site.tenant or site.tenant.id != tenant_id):
-                site.tenant = tenant_id
-                needs_update = True
-            if site.status != status:
-                site.status = status
-                needs_update = True
-            if site.description != description:
-                site.description = description
-                needs_update = True
-            if tags and set(tag.id for tag in site.tags) != set(tag['id'] for tag in tags):
-                site.tags = tags
-                needs_update = True
-            if needs_update:
-                site.save()
-                logger.info(f"Updated Site: {name} (slug: {slug})")
-            else:
-                logger.info(f"Found existing Site: {name} (slug: {slug})")
-            return site
-    except Exception as e:
-        logger.debug(f"Error getting Site {name}: {str(e)}")
-    
-    logger.info(f"Creating new Site: {name} (slug: {slug})")
-    site_data = {
-        'name': name,
-        'slug': slug,
-        'status': status,
-        'description': description,
-        'tags': tags or []
-    }
-    if group_id:
-        site_data['group'] = group_id
-    if region_id:
-        site_data['region'] = region_id
-    if tenant_id:
-        site_data['tenant'] = tenant_id
-    return nb.dcim.sites.create(**site_data)
-
-def setup_organization(nb, config):
-    org_config = config.get('organization', {})
-    if not org_config:
-        logger.info("No organization config found; skipping setup")
-        return None, {}
-
-    # Setup Site Group
-    site_group_config = org_config.get('site_group', {})
-    site_group = get_or_create_site_group(
-        nb,
-        name=site_group_config.get('name', 'Azure Sites'),
-        description=site_group_config.get('description', 'Group for all Azure-related sites')
-    )
-    site_group_id = site_group.id if site_group else None
-
-    # Setup Regions and Tags from mapping (now a list of dicts)
-    regions_config = org_config.get('regions', {})
-    mappings = regions_config.get('mapping', [])  # List of dicts
-    region_tag_config = regions_config.get('region_tags', {})
-    default_tag_color = region_tag_config.get('default_color', '0000ff')  # Blue default
-    desc_prefix = region_tag_config.get('default_description_prefix', 'Azure Region: ')
-
-    region_map = {}
-    for entry in mappings:
-        if not isinstance(entry, dict):
-            logger.warning(f"Skipping invalid region mapping entry: {entry} (must be dict)")
-            continue
-        
-        azure_location = entry.get('azure_location')
-        tag_name = entry.get('tag_name')
-        tag_color = clean_color(entry.get('color', default_tag_color))  # Per-region color or default
-        
-        if not azure_location or not tag_name:
-            logger.warning(f"Skipping region mapping missing azure_location or tag_name: {entry}")
-            continue
-
-        # Derive human-readable name (e.g., "francecentral" -> "France Central")
-        human_name = ' '.join(word.capitalize() for word in re.split(r'(?=[A-Z])', azure_location) if word)
-
-        # Create/Get Tag (e.g., "FRC" with specific color)
-        tag_desc = f"{desc_prefix}{human_name}"
-        tag = get_or_create_tag(nb, tag_name, tag_description=tag_desc, tag_color=tag_color)
-        tag_dict = [{'id': tag.id}] if tag else []
-
-        # Create/Get Region (slug = lowercase tag_name, e.g., "frc")
-        region_slug = tag_name.lower()
-        region = get_or_create_region(
-            nb,
-            name=human_name,
-            slug=region_slug,
-            tags=tag_dict,
-            description=tag_desc
-        )
-        if region:
-            region_map[azure_location] = {
-                'id': region.id,
-                'human_name': human_name,
-                'tag': tag_dict
-            }
-            logger.info(f"Processed Region for {azure_location}: {human_name} (slug: {region_slug}) with tag {tag_name} (color: {tag_color})")
-
-    return site_group_id, region_map
-
-def setup_static_prefixes(nb, config):
-    """Setup static prefixes and their children from config.yaml, and collect child tags for inheritance"""
-    prefixes_config = config.get('static_prefixes', [])
-    if not prefixes_config:
-        logger.info("No static_prefixes defined in config.yaml; skipping")
-        return []
-
-    logger.info("Setting up static prefixes from config.yaml")
-
-    child_tag_map = []  # List of (child_network, child_tags) for later inheritance
-
-    def create_prefix_recursive(prefix_config, parent_id=None):
-        prefix_value = prefix_config.get('prefix')
-        if not prefix_value:
-            logger.warning("Skipping prefix config without 'prefix'")
-            return None
-
-        # Process tags
-        tags = []
-        for tag_item in prefix_config.get('tags', []):
-            tag = get_or_create_tag(nb, tag_item)
-            if tag:
-                tags.append({'id': tag.id})
-
-        # Defaults for prefix (with status and is_pool support)
-        defaults = {
-            'description': prefix_config.get('description', '')
-        }
-
-        status = prefix_config.get('status', 'container')  # Default to 'container' for parents
-        is_pool = prefix_config.get('is_pool', False)  # Default to false
-
-        # Create or get the prefix (no Azure-specific fields here)
-        prefix, created = get_or_create_prefix(
-            nb,
-            prefix_value,
-            defaults,
-            tags=tags,
-            status=status,
-            is_pool=is_pool
-        )
-        action = "Created" if created else "Updated"
-        logger.info(f"{action} static prefix: {prefix_value} (status: {status}, is_pool: {is_pool})")
-
-        # If this is a child (has no children or is leaf), collect for tag inheritance
-        if 'children' not in prefix_config or not prefix_config['children']:
-            try:
-                child_network = ipaddress.ip_network(prefix_value, strict=False)
-                child_tag_map.append((child_network, tags))
-                logger.debug(f"Collected child prefix for tag inheritance: {prefix_value} with {len(tags)} tags")
-            except ValueError as e:
-                logger.warning(f"Invalid network for child prefix {prefix_value}: {str(e)}")
-
-        # Recurse for children
-        for child_config in prefix_config.get('children', []):
-            create_prefix_recursive(child_config, parent_id=prefix.id if prefix else None)
-
-    # Process each top-level prefix
-    for prefix_config in prefixes_config:
-        create_prefix_recursive(prefix_config)
-
-    logger.info("Static prefixes setup completed")
-    return child_tag_map
-
-def apply_inherited_tags(nb, child_tag_map):
-    """Apply tags from static child prefixes to all active prefixes that are subnets of them"""
-    if not child_tag_map:
-        logger.info("No child prefixes for tag inheritance; skipping")
-        return
-
-    logger.info("Applying inherited tags to active prefixes")
-
-    # Get all active prefixes
-    active_prefixes = nb.ipam.prefixes.filter(status='active')
-    for prefix in active_prefixes:
-        prefix_net = ipaddress.ip_network(prefix.prefix, strict=False)
-        needs_update = False
-        current_tags = set(tag.id for tag in prefix.tags)
-
-        for child_net, inherited_tags in child_tag_map:
-            if prefix_net.subnet_of(child_net):
-                for tag_dict in inherited_tags:
-                    if tag_dict['id'] not in current_tags:
-                        prefix.tags.append(tag_dict)
-                        current_tags.add(tag_dict['id'])
-                        needs_update = True
-                logger.debug(f"Inherited tags from {child_net} to prefix {prefix.prefix}")
-
-        if needs_update:
-            prefix.save()
-            logger.info(f"Updated prefix {prefix.prefix} with inherited tags")
-
-    logger.info("Inherited tags application completed")
 
 def sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credential):  # Pass credential
     logger.info(f"Syncing data to Netbox at {netbox_url}")
@@ -934,45 +634,25 @@ def sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credentia
     nb = api(netbox_url, token=netbox_token)
     nb.http_session = session
     
-    # Global default tag color from config (used for string tags)
-    default_tag_color = config.get('tags', {}).get('default_color', 'aaaaaa')
-    logger.debug(f"Using global default tag color: {default_tag_color}")
-    
     setup_custom_fields(nb, config)
-    setup_custom_tags(nb, config)  # Setup custom tags from config.yaml
+    setup_custom_tags(nb, config)  # New: Setup custom tags from config.yaml
     
     aggregate_map = setup_rirs_and_aggregates(nb, config)
     role_map = setup_ipam_roles(nb, config)
     tenant_map, aggregate_tag_filter = setup_tenancy(nb, config, all_network_data)
     
-    # New: Setup static prefixes and collect child tag map for inheritance
-    child_tag_map = setup_static_prefixes(nb, config)
-    
-    # New: Setup Organization (Sites, Site Groups, Regions)
-    site_group_id, region_map = setup_organization(nb, config)
-    
     sync_tag_config = config.get('tags', {}).get('sync_tag', {})
-    sync_tag_name = sync_tag_config.get('name', "azure-sync")
-    sync_tag_desc = sync_tag_config.get('description', "Synced from Azure")
-    sync_tag_color = clean_color(sync_tag_config.get('color', default_tag_color))  # Use configured color or fallback
     azure_tag = get_or_create_tag(
         nb,
-        tag_input=sync_tag_name,
-        tag_description=sync_tag_desc,
-        tag_color=sync_tag_color  # Pass the dedicated color
+        tag_input=sync_tag_config.get('name', "azure-sync"),
+        tag_description=sync_tag_config.get('description', "Synced from Azure")
     )
-    if not azure_tag:
-        logger.error("Failed to create/get azure-sync tag; continuing without it.")
-        azure_tag_dict = []
-    else:
-        azure_tag_dict = [{'id': azure_tag.id}]
+    azure_tag_dict = [{'id': azure_tag.id}]
     
     additional_tags = []
-    additional_tag_configs = config.get('tags', {}).get('additional_tags', [])
-    for tag_item in additional_tag_configs:
-        tag = get_or_create_tag(nb, tag_item, tag_color=default_tag_color)
-        if tag:
-            additional_tags.append({'id': tag.id})
+    for tag_name in config.get('tags', {}).get('additional_tags', []):
+        tag = get_or_create_tag(nb, tag_name)
+        additional_tags.append({'id': tag.id})
     
     for subscription_data in all_network_data:
         subscription_id = subscription_data['subscription_id']
@@ -983,19 +663,8 @@ def sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credentia
             criteria = role_data['match_criteria'].lower()
             if criteria in subscription_name.lower():
                 matching_role = role_data
-                logger.debug(f"Matched subscription {subscription_name} to role {role_name} using criteria '{criteria}'")
+                logger.debug(f"Matched subscription {subscription_name} to role {role_name}")
                 break
-            else:
-                logger.debug(f"No match for subscription {subscription_name} with role {role_name} criteria '{criteria}'")
-        
-        if not matching_role:
-            # Assign default "TBD" role if no match
-            default_role_name = 'TBD'  # Assuming the role name is 'TBD' as per example
-            matching_role = role_map.get(default_role_name)
-            if matching_role:
-                logger.info(f"No specific role matched for subscription {subscription_name}; assigning default role '{default_role_name}'")
-            else:
-                logger.warning(f"No specific role matched and default 'TBD' role not found for subscription {subscription_name}")
         
         role_id = matching_role['id'] if matching_role else None
         
@@ -1015,34 +684,6 @@ def sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credentia
             peering_check = get_vnet_peerings(network_client, vnet['resource_group'], vnet['name'], config)
             logger.debug(f"Peering check for VNet {vnet['name']}: {peering_check}")
             
-            # New: Get/Create Site for this VNet based on location
-            vnet_location = vnet['location']
-            region_data = region_map.get(vnet_location)
-            site_id = None
-            if region_data:
-                site_prefix = config.get('organization', {}).get('site_prefix', 'Azure - ')
-                human_region = region_data['human_name']
-                # Updated: Include shortened subscription_id in site name/slug for uniqueness
-                short_sub_id = subscription_id[:8]  # First 8 characters of subscription ID
-                site_name = f"{site_prefix}{short_sub_id}-{vnet['name']} ({human_region})"
-                site_slug = site_name.lower().replace(" ", "-").replace("(", "").replace(")", "")
-                site_desc = f"Azure VNet: {vnet['name']} in {human_region} (Subscription: {subscription_id} - {subscription_name})"
-                
-                site = get_or_create_site(
-                    nb,
-                    name=site_name,
-                    slug=site_slug,
-                    group_id=site_group_id,
-                    region_id=region_data['id'],
-                    tenant_id=tenant_id,  # New: Assign tenant to site
-                    tags=region_data['tag'],  # Assign the region-specific tag (e.g., [{'id': FRC_tag_id}])
-                    description=site_desc
-                )
-                site_id = site.id if site else None
-                logger.info(f"Processed Site for VNet {vnet['name']}: {site_name} (id: {site_id})")
-            else:
-                logger.warning(f"No region mapping found for Azure location '{vnet_location}'; skipping Site/Region for VNet {vnet['name']}")
-            
             for idx, address_space in enumerate(address_spaces, 1):
                 logger.debug(f"Syncing address space {idx}/{len(address_spaces)} for VNet {vnet['name']}: {address_space}")
                 
@@ -1061,18 +702,22 @@ def sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credentia
                 
                 aggregate_id = matching_aggregate['id'] if matching_aggregate else None
                 
-                # FORCE assign_tenant = True to ensure EVERY prefix gets the tenant (one per subscription)
-                # This ensures all prefixes for a subscription are visible under the tenant in NetBox UI.
-                assign_tenant = True  # Forced to True (ignores aggregate_tag_filter for tenant assignment)
-                logger.debug(f"Forcing tenant assignment for prefix {address_space} (tenant_id: {tenant_id})")
+                assign_tenant = True
+                if aggregate_tag_filter:
+                    if not matching_aggregate:
+                        assign_tenant = False
+                        logger.debug(f"Skipping tenant assignment for {address_space} (no aggregate matched and filter is set)")
+                    else:
+                        agg_tag_names = matching_aggregate.get('tag_names', [])
+                        if aggregate_tag_filter.lower() not in agg_tag_names:
+                            assign_tenant = False
+                            logger.debug(f"Skipping tenant assignment for {address_space} (aggregate lacks tag '{aggregate_tag_filter}')")
                 
                 prefix_tags = azure_tag_dict + additional_tags
                 if matching_aggregate:
                     prefix_tags += matching_aggregate['tags']
                 if matching_role:
                     prefix_tags += matching_role['tags']
-                if region_data and region_data['tag']:
-                    prefix_tags += region_data['tag']  # Add region tag to prefix
                 
                 prefix_defaults = {
                     'description': f"Azure VNet: {vnet['name']} (Subscription: {subscription_id}) - Address Space {idx}",
@@ -1092,15 +737,11 @@ def sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credentia
                     aggregate_id=aggregate_id,
                     role_id=role_id,
                     tenant_id=tenant_id if assign_tenant else None,
-                    site_id=site_id,
                     tags=prefix_tags
                 )
                 
                 action = "Created" if created else "Updated"
-                logger.info(f"{action} prefix for VNet {vnet['name']} address space {idx}: {address_space} (Aggregate: {aggregate_id if aggregate_id else 'None'}, Role: {role_id if role_id else 'None'}, Tenant: {tenant_id if tenant_id else 'None'}, Site: {site_id if site_id else 'None'})")
-
-    # New: After all Azure syncing, apply inherited tags from static child prefixes
-    apply_inherited_tags(nb, child_tag_map)
+                logger.info(f"{action} prefix for VNet {vnet['name']} address space {idx}: {address_space} (Aggregate: {aggregate_id if aggregate_id else 'None'}, Role: {role_id if role_id else 'None'}, Tenant: {tenant_id if tenant_id else 'None'})")
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Sync Azure network data to Netbox')
@@ -1113,13 +754,12 @@ def parse_arguments():
     parser.add_argument('--azure-client-id', help='Azure Service Principal Client ID (appId)')
     parser.add_argument('--azure-client-secret', help='Azure Service Principal Client Secret')
     parser.add_argument('--azure-tenant-id', help='Azure Tenant ID')
-    parser.add_argument('--config', default='config.yaml', help='Path to config YAML file')
     return parser.parse_args()
 
 def main():
-    args = parse_arguments()
+    config = load_config_yaml()
     
-    config = load_config_yaml(args.config)
+    args = parse_arguments()
     
     netbox_url = args.netbox_url or config.get('netbox', {}).get('url')
     netbox_token = args.netbox_token or config.get('netbox', {}).get('token')
@@ -1147,30 +787,10 @@ def main():
         mg_name = args.management_group_name or config.get('azure', {}).get('subscriptions', {}).get('management_group', {}).get('name')
         
         if mg_id or mg_name:
-            subscriptions = []
-            if mg_id:
-                if not isinstance(mg_id, list):
-                    mg_id = [mg_id]
-                for single_mg_id in mg_id:
-                    subs = get_management_group_subscriptions(credential, management_group_id=single_mg_id, management_group_name=None)
-                    subscriptions.extend(subs)
-            if mg_name:
-                if not isinstance(mg_name, list):
-                    mg_name = [mg_name]
-                for single_mg_name in mg_name:
-                    subs = get_management_group_subscriptions(credential, management_group_id=None, management_group_name=single_mg_name)
-                    subscriptions.extend(subs)
-            
+            subscriptions = get_management_group_subscriptions(credential, mg_id, mg_name)
             if not subscriptions:
-                logger.error("No subscriptions found in the specified management group(s)")
+                logger.error("No subscriptions found in the specified management group")
                 sys.exit(1)
-            
-            # Deduplicate subscriptions by ID
-            sub_dict = {}
-            for sub in subscriptions:
-                sub_dict[sub.subscription_id] = sub
-            subscriptions = list(sub_dict.values())
-            logger.info(f"Collected {len(subscriptions)} unique subscriptions from management group(s)")
         elif specific_id:
             logger.info(f"Processing only subscription {specific_id}")
             sub_client = SubscriptionClient(credential)
@@ -1220,6 +840,50 @@ def main():
     except Exception as e:
         logger.error(f"Error during Azure to Netbox sync: {str(e)}", exc_info=True)
         sys.exit(1)
+
+# --- Organization helpers ---
+
+def get_or_create_site_group(nb, name, description=""):
+    site_group = nb.dcim.site_groups.get(name=name)
+    if site_group:
+        return site_group
+    return nb.dcim.site_groups.create(name=name, description=description, slug=name.lower().replace(" ", "-"))
+
+def get_or_create_tenant_group(nb, name, description="", slug=None):
+    if not slug:
+        slug = name.lower().replace(" ", "-")
+    tenant_group = nb.tenancy.tenant_groups.get(slug=slug)
+    if tenant_group:
+        return tenant_group
+    return nb.tenancy.tenant_groups.create(name=name, description=description, slug=slug)
+
+def get_or_create_tenant(nb, name, group=None, description="", slug=None, tags=None):
+    if not slug:
+        slug = name.lower().replace(" ", "-")
+    tenant = nb.tenancy.tenants.get(slug=slug)
+    if tenant:
+        return tenant
+    group_id = group.id if group else None
+    return nb.tenancy.tenants.create(name=name, group=group_id, description=description, slug=slug, tags=tags or [])
+
+def get_or_create_site(nb, name, group=None, tenant=None, region=None, description="", tags=None):
+    site = nb.dcim.sites.get(name=name)
+    if site:
+        return site
+    group_id = group.id if group else None
+    tenant_id = tenant.id if tenant else None
+    region_id = region.id if region else None
+    return nb.dcim.sites.create(
+        name=name,
+        status='active',
+        group=group_id,
+        tenant=tenant_id,
+        region=region_id,
+        description=description,
+        tags=tags or []
+    )
+
+# --- End Organization helpers ---
 
 if __name__ == "__main__":
     main()
