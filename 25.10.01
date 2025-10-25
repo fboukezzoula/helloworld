@@ -287,8 +287,10 @@ def get_or_create_tenant(nb, name, group=None, description="", slug=None, tags=N
         tenant = nb.tenancy.tenants.get(slug=slug)
         if tenant:
             needs_update = False
-            if tenant.group != group:
-                tenant.group = group
+            current_group_id = tenant.group.id if tenant.group else None
+            new_group_id = group.id if group else None
+            if current_group_id != new_group_id:
+                tenant.group = new_group_id
                 needs_update = True
             if tenant.description != description:
                 tenant.description = description
@@ -308,11 +310,12 @@ def get_or_create_tenant(nb, name, group=None, description="", slug=None, tags=N
         logger.debug(f"Error getting Tenant {name}: {str(e)}")
     
     logger.info(f"Creating new Tenant: {name} with slug {slug}")
+    new_group_id = group.id if group else None
     try:
         return nb.tenancy.tenants.create(
             name=name,
             slug=slug,
-            group=group,
+            group=new_group_id,
             description=description,
             tags=tags or []
         )
@@ -619,6 +622,11 @@ def setup_custom_tags(nb, config):
         slug = tag_config.get('slug', name.lower().replace(" ", "-"))
         description = tag_config.get('description', "")
         color = tag_config.get('color', "aaaaaa")  # Default gray if not specified
+
+        # Validate color is a valid 6-char hex
+        if not re.match(r'^[0-9a-fA-F]{6}$', color):
+            logger.error(f"Invalid color '{color}' for tag '{name}'; must be 6-character hexadecimal (e.g., 'ff0000'). Skipping.")
+            continue
 
         get_or_create_tag(nb, name, description, color)
 
