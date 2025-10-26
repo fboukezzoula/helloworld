@@ -712,20 +712,12 @@ def sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credentia
     tenant_map, aggregate_tag_filter = setup_tenancy(nb, config, all_network_data)
     
     sync_tag_config = config.get('tags', {}).get('sync_tag', {})
-    sync_tag_name = sync_tag_config.get('name', "azure-sync")
-    sync_tag_desc = sync_tag_config.get('description', "Synced from Azure")
-    sync_tag_color = clean_color(sync_tag_config.get('color', default_tag_color))  # Use configured color or fallback
     azure_tag = get_or_create_tag(
         nb,
-        tag_input=sync_tag_name,
-        tag_description=sync_tag_desc,
-        tag_color=sync_tag_color  # Pass the dedicated color
+        tag_input=sync_tag_config.get('name', "azure-sync"),
+        tag_description=sync_tag_config.get('description', "Synced from Azure")
     )
-    if not azure_tag:
-        logger.error("Failed to create/get azure-sync tag; continuing without it.")
-        azure_tag_dict = []
-    else:
-        azure_tag_dict = [{'id': azure_tag.id}]
+    azure_tag_dict = [{'id': azure_tag.id}]
     
     additional_tags = []
     for tag_name in config.get('tags', {}).get('additional_tags', []):
