@@ -359,28 +359,18 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
             prefix = nb.ipam.prefixes.get(prefix.id)
             logger.debug(f"Reloaded full prefix: {prefix_value}")
             
-            needs_update = False
-            for key, value in defaults.items():
-                if key == 'parent' or key == 'custom_fields' or key == 'status' or key == 'tags' or key == 'description':  
-                    continue
-                current_value = getattr(prefix, key, None)
-                logger.debug(f"Checking {key} for {prefix_value}: current={current_value!r}, new={value!r}")
-                if current_value != value:
-                    setattr(prefix, key, value)
-                    needs_update = True
-                    logger.debug(f"Updated {key} for {prefix_value} from {current_value!r} to {value!r}")
+            changes = {}
             
-            # Special handling for description
+            # Handle description
             if 'description' in defaults:
                 new_desc = defaults['description']
                 current_desc = getattr(prefix, 'description', '')
                 logger.debug(f"Checking description for {prefix_value}: current={current_desc!r}, new={new_desc!r}")
                 if current_desc != new_desc:
-                    prefix.description = new_desc
-                    needs_update = True
-                    logger.debug(f"Updated description for {prefix_value} from {current_desc!r} to {new_desc!r}")
+                    changes['description'] = new_desc
+                    logger.debug(f"Queued update for description from {current_desc!r} to {new_desc!r}")
             
-            # Special handling for status
+            # Handle status
             if 'status' in defaults:
                 new_status = defaults['status']
                 current_status = getattr(prefix, 'status', None)
@@ -393,36 +383,10 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
                     current_status_value = current_status
                 logger.debug(f"Checking status for {prefix_value}: current={current_status_value!r}, new={new_status!r}")
                 if current_status_value != new_status:
-                    prefix.status = new_status
-                    needs_update = True
-                    logger.debug(f"Updated status for {prefix_value} from {current_status_value!r} to {new_status!r}")
+                    changes['status'] = new_status
+                    logger.debug(f"Queued update for status from {current_status_value!r} to {new_status!r}")
             
-            custom_fields = dict(getattr(prefix, 'custom_fields', {}) or {})
-            custom_fields_updated = False
-            
-            if subscription_name and subscription_id:
-                azure_subscription_value = subscription_name
-                
-                existing_value = custom_fields.get('azure_subscription', '')
-                if existing_value != azure_subscription_value or re.search(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', existing_value, re.IGNORECASE):
-                    custom_fields['azure_subscription'] = azure_subscription_value
-                    custom_fields['azure_subscription_url'] = f"https://portal.azure.com/#@/subscription/{subscription_id}/overview"
-                    custom_fields_updated = True
-                    needs_update = True
-                    logger.debug(f"Forced update of azure_subscription to clean value: {azure_subscription_value}")
-            
-            # Update peering_check if necessary
-            if 'custom_fields' in defaults and 'peering_check' in defaults['custom_fields']:
-                new_peering = defaults['custom_fields']['peering_check']
-                current_peering = custom_fields.get('peering_check', None)
-                logger.debug(f"Checking peering_check for {prefix_value}: current={current_peering!r}, new={new_peering!r}")
-                if current_peering != new_peering:
-                    custom_fields['peering_check'] = new_peering
-                    custom_fields_updated = True
-                    needs_update = True
-                    logger.debug(f"Updated peering_check for {prefix_value} from {current_peering!r} to {new_peering!r}")
-            
-            # Safely check aggregate
+            # Handle aggregate
             current_aggregate_id = None
             if hasattr(prefix, 'aggregate') and prefix.aggregate is not None:
                 if isinstance(prefix.aggregate, dict):
@@ -430,10 +394,10 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
                 else:
                     current_aggregate_id = getattr(prefix.aggregate, 'id', None)
             if aggregate_id and current_aggregate_id != aggregate_id:
-                prefix.aggregate = aggregate_id
-                needs_update = True
+                changes['aggregate'] = {'id': aggregate_id}
+                logger.debug(f"Queued update for aggregate to {aggregate_id}")
             
-            # Safely check role
+            # Handle role
             current_role_id = None
             if hasattr(prefix, 'role') and prefix.role is not None:
                 if isinstance(prefix.role, dict):
@@ -441,10 +405,10 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
                 else:
                     current_role_id = getattr(prefix.role, 'id', None)
             if role_id and current_role_id != role_id:
-                prefix.role = role_id
-                needs_update = True
+                changes['role'] = {'id': role_id}
+                logger.debug(f"Queued update for role to {role_id}")
             
-            # Safely check tenant
+            # Handle tenant
             current_tenant_id = None
             if hasattr(prefix, 'tenant') and prefix.tenant is not None:
                 if isinstance(prefix.tenant, dict):
@@ -452,10 +416,10 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
                 else:
                     current_tenant_id = getattr(prefix.tenant, 'id', None)
             if tenant_id and current_tenant_id != tenant_id:
-                prefix.tenant = tenant_id
-                needs_update = True
+                changes['tenant'] = {'id': tenant_id}
+                logger.debug(f"Queued update for tenant to {tenant_id}")
             
-            # Check tags
+            # Handle tags
             current_tags = set()
             if hasattr(prefix, 'tags') and prefix.tags:
                 for tag in prefix.tags:
@@ -465,21 +429,42 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
                         current_tags.add(getattr(tag, 'id', None))
             new_tags = set(tag['id'] for tag in tags)
             if current_tags != new_tags:
-                prefix.tags = tags
-                needs_update = True
+                changes['tags'] = tags
+                logger.debug(f"Queued update for tags")
             
-            if needs_update:
-                if custom_fields_updated:
-                    prefix.custom_fields = custom_fields
-                logger.debug(f"Saving prefix {prefix_value} with custom_fields: {prefix.custom_fields}")
-                try:
-                    if prefix.save():
-                        logger.info(f"Successfully updated prefix: {prefix_value}")
-                    else:
-                        logger.warning(f"Update for prefix {prefix_value} failed or no changes detected")
-                except Exception as e:
-                    logger.error(f"Failed to save prefix {prefix_value}: {str(e)}")
-                    raise
+            # Handle custom fields
+            custom_fields = dict(getattr(prefix, 'custom_fields', {}) or {})
+            custom_fields_updated = False
+            
+            if subscription_name and subscription_id:
+                azure_subscription_value = subscription_name
+                existing_value = custom_fields.get('azure_subscription', '')
+                if existing_value != azure_subscription_value or re.search(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', existing_value, re.IGNORECASE):
+                    custom_fields['azure_subscription'] = azure_subscription_value
+                    custom_fields['azure_subscription_url'] = f"https://portal.azure.com/#@/subscription/{subscription_id}/overview"
+                    custom_fields_updated = True
+                    logger.debug(f"Queued update for azure_subscription")
+            
+            if 'custom_fields' in defaults and 'peering_check' in defaults['custom_fields']:
+                new_peering = defaults['custom_fields']['peering_check']
+                current_peering = custom_fields.get('peering_check', None)
+                logger.debug(f"Checking peering_check for {prefix_value}: current={current_peering!r}, new={new_peering!r}")
+                if current_peering != new_peering:
+                    custom_fields['peering_check'] = new_peering
+                    custom_fields_updated = True
+                    logger.debug(f"Queued update for peering_check")
+            
+            if custom_fields_updated:
+                changes['custom_fields'] = custom_fields
+            
+            if changes:
+                logger.debug(f"Applying changes to prefix {prefix_value}: {changes}")
+                if prefix.update(changes):
+                    logger.info(f"Successfully updated prefix: {prefix_value}")
+                else:
+                    logger.warning(f"Update for prefix {prefix_value} failed")
+            else:
+                logger.debug(f"No changes needed for prefix {prefix_value}")
                 
             return prefix, False
     except AttributeError as e:
