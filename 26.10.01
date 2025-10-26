@@ -355,14 +355,20 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
             logger.info(f"Found existing prefix: {prefix_value}")
             prefix = list(existing_prefixes)[0]
             
+            # Reload the full prefix object to ensure all fields are populated
+            prefix = nb.ipam.prefixes.get(prefix.id)
+            logger.debug(f"Reloaded full prefix: {prefix_value}")
+            
             needs_update = False
             for key, value in defaults.items():
                 if key == 'parent' or key == 'custom_fields':  
                     continue
                 current_value = getattr(prefix, key, None)
+                logger.debug(f"Checking {key} for {prefix_value}: current={current_value!r}, new={value!r}")
                 if current_value != value:
                     setattr(prefix, key, value)
                     needs_update = True
+                    logger.debug(f"Updated {key} for {prefix_value} from {current_value!r} to {value!r}")
             
             custom_fields = dict(getattr(prefix, 'custom_fields', {}) or {})
             custom_fields_updated = False
@@ -390,24 +396,47 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
                     logger.debug(f"Updated peering_check for {prefix_value} from {current_peering!r} to {new_peering!r}")
             
             # Safely check aggregate
-            current_aggregate_id = getattr(getattr(prefix, 'aggregate', None), 'id', None) if hasattr(prefix, 'aggregate') else None
+            current_aggregate_id = None
+            if prefix.aggregate:
+                if isinstance(prefix.aggregate, dict):
+                    current_aggregate_id = prefix.aggregate.get('id')
+                else:
+                    current_aggregate_id = getattr(prefix.aggregate, 'id', None)
             if aggregate_id and current_aggregate_id != aggregate_id:
                 prefix.aggregate = aggregate_id
                 needs_update = True
             
             # Safely check role
-            current_role_id = getattr(getattr(prefix, 'role', None), 'id', None) if hasattr(prefix, 'role') else None
+            current_role_id = None
+            if prefix.role:
+                if isinstance(prefix.role, dict):
+                    current_role_id = prefix.role.get('id')
+                else:
+                    current_role_id = getattr(prefix.role, 'id', None)
             if role_id and current_role_id != role_id:
                 prefix.role = role_id
                 needs_update = True
             
             # Safely check tenant
-            current_tenant_id = getattr(getattr(prefix, 'tenant', None), 'id', None) if hasattr(prefix, 'tenant') else None
+            current_tenant_id = None
+            if prefix.tenant:
+                if isinstance(prefix.tenant, dict):
+                    current_tenant_id = prefix.tenant.get('id')
+                else:
+                    current_tenant_id = getattr(prefix.tenant, 'id', None)
             if tenant_id and current_tenant_id != tenant_id:
                 prefix.tenant = tenant_id
                 needs_update = True
             
-            if tags and set(tag.id for tag in prefix.tags) != set(tag['id'] for tag in tags):
+            # Check tags
+            current_tags = set()
+            for tag in prefix.tags:
+                if isinstance(tag, dict):
+                    current_tags.add(tag.get('id'))
+                else:
+                    current_tags.add(getattr(tag, 'id', None))
+            new_tags = set(tag['id'] for tag in tags)
+            if current_tags != new_tags:
                 prefix.tags = tags
                 needs_update = True
             
