@@ -364,7 +364,8 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
                     setattr(prefix, key, value)
                     needs_update = True
             
-            custom_fields = dict(getattr(prefix, 'custom_fields', {}))  # Make a copy
+            custom_fields = dict(getattr(prefix, 'custom_fields', {}) or {})
+            custom_fields_updated = False
             
             if subscription_name and subscription_id:
                 azure_subscription_value = subscription_name
@@ -373,6 +374,7 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
                 if existing_value != azure_subscription_value or re.search(r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}', existing_value, re.IGNORECASE):
                     custom_fields['azure_subscription'] = azure_subscription_value
                     custom_fields['azure_subscription_url'] = f"https://portal.azure.com/#@/subscription/{subscription_id}/overview"
+                    custom_fields_updated = True
                     needs_update = True
                     logger.debug(f"Forced update of azure_subscription to clean value: {azure_subscription_value}")
             
@@ -383,21 +385,19 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
                 logger.debug(f"Checking peering_check for {prefix_value}: current={current_peering!r}, new={new_peering!r}")
                 if current_peering != new_peering:
                     custom_fields['peering_check'] = new_peering
+                    custom_fields_updated = True
                     needs_update = True
                     logger.debug(f"Updated peering_check for {prefix_value} from {current_peering!r} to {new_peering!r}")
             
-            if needs_update:
-                prefix.custom_fields = custom_fields
-            
-            if aggregate_id and getattr(prefix, 'aggregate', None) != aggregate_id:
+            if aggregate_id and getattr(prefix.aggregate, 'id', None) != aggregate_id:
                 prefix.aggregate = aggregate_id
                 needs_update = True
             
-            if role_id and getattr(prefix, 'role', None) != role_id:
+            if role_id and getattr(prefix.role, 'id', None) != role_id:
                 prefix.role = role_id
                 needs_update = True
             
-            if tenant_id and getattr(prefix, 'tenant', None) != tenant_id:
+            if tenant_id and getattr(prefix.tenant, 'id', None) != tenant_id:
                 prefix.tenant = tenant_id
                 needs_update = True
             
@@ -406,8 +406,15 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
                 needs_update = True
             
             if needs_update:
-                prefix.save()
-                logger.info(f"Updated prefix: {prefix_value}")
+                if custom_fields_updated:
+                    prefix.custom_fields = custom_fields
+                logger.debug(f"Saving prefix {prefix_value} with custom_fields: {prefix.custom_fields}")
+                try:
+                    prefix.save()
+                    logger.info(f"Updated prefix: {prefix_value}")
+                except Exception as e:
+                    logger.error(f"Failed to save prefix {prefix_value}: {str(e)}")
+                    raise
                 
             return prefix, False
     except AttributeError as e:
