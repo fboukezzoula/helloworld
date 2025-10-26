@@ -397,7 +397,7 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
             
             # Safely check aggregate
             current_aggregate_id = None
-            if prefix.aggregate:
+            if hasattr(prefix, 'aggregate') and prefix.aggregate is not None:
                 if isinstance(prefix.aggregate, dict):
                     current_aggregate_id = prefix.aggregate.get('id')
                 else:
@@ -408,7 +408,7 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
             
             # Safely check role
             current_role_id = None
-            if prefix.role:
+            if hasattr(prefix, 'role') and prefix.role is not None:
                 if isinstance(prefix.role, dict):
                     current_role_id = prefix.role.get('id')
                 else:
@@ -419,7 +419,7 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
             
             # Safely check tenant
             current_tenant_id = None
-            if prefix.tenant:
+            if hasattr(prefix, 'tenant') and prefix.tenant is not None:
                 if isinstance(prefix.tenant, dict):
                     current_tenant_id = prefix.tenant.get('id')
                 else:
@@ -430,11 +430,12 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
             
             # Check tags
             current_tags = set()
-            for tag in prefix.tags:
-                if isinstance(tag, dict):
-                    current_tags.add(tag.get('id'))
-                else:
-                    current_tags.add(getattr(tag, 'id', None))
+            if hasattr(prefix, 'tags') and prefix.tags:
+                for tag in prefix.tags:
+                    if isinstance(tag, dict):
+                        current_tags.add(tag.get('id'))
+                    else:
+                        current_tags.add(getattr(tag, 'id', None))
             new_tags = set(tag['id'] for tag in tags)
             if current_tags != new_tags:
                 prefix.tags = tags
@@ -745,197 +746,4 @@ def sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credentia
                     for agg_prefix, agg_data in aggregate_map.items():
                         agg_net = ipaddress.ip_network(agg_prefix, strict=False)
                         if prefix_net.subnet_of(agg_net):
-                            matching_aggregate = agg_data
-                            logger.debug(f"Matched address space {address_space} to aggregate {agg_prefix}")
-                            break
-                except ValueError as e:
-                    logger.warning(f"Invalid IP network for {address_space}: {str(e)}")
-                    continue
-                
-                aggregate_id = matching_aggregate['id'] if matching_aggregate else None
-                
-                assign_tenant = True
-                if aggregate_tag_filter:
-                    if not matching_aggregate:
-                        assign_tenant = False
-                        logger.debug(f"Skipping tenant assignment for {address_space} (no aggregate matched and filter is set)")
-                    else:
-                        agg_tag_names = matching_aggregate.get('tag_names', [])
-                        if aggregate_tag_filter.lower() not in agg_tag_names:
-                            assign_tenant = False
-                            logger.debug(f"Skipping tenant assignment for {address_space} (aggregate lacks tag '{aggregate_tag_filter}')")
-                
-                prefix_tags = azure_tag_dict + additional_tags
-                if matching_aggregate:
-                    prefix_tags += matching_aggregate['tags']
-                if matching_role:
-                    prefix_tags += matching_role['tags']
-                
-                prefix_defaults = {
-                    'description': f"Azure VNet: {vnet['name']} (Subscription: {subscription_id}) - Address Space {idx}",
-                    'status': 'active',
-                    'tags': prefix_tags
-                }
-                if 'custom_fields' not in prefix_defaults:
-                    prefix_defaults['custom_fields'] = {}
-                prefix_defaults['custom_fields']['peering_check'] = peering_check
-                
-                vnet_prefix, created = get_or_create_prefix(
-                    nb,
-                    address_space,
-                    prefix_defaults,
-                    subscription_name=subscription_name,
-                    subscription_id=subscription_id,
-                    aggregate_id=aggregate_id,
-                    role_id=role_id,
-                    tenant_id=tenant_id if assign_tenant else None,
-                    tags=prefix_tags
-                )
-                
-                action = "Created" if created else "Updated"
-                logger.info(f"{action} prefix for VNet {vnet['name']} address space {idx}: {address_space} (Aggregate: {aggregate_id if aggregate_id else 'None'}, Role: {role_id if role_id else 'None'}, Tenant: {tenant_id if tenant_id else 'None'})")
-
-def parse_arguments():
-    parser = argparse.ArgumentParser(description='Sync Azure network data to Netbox')
-    parser.add_argument('--netbox-url', help='Netbox URL')
-    parser.add_argument('--netbox-token', help='Netbox API token')
-    parser.add_argument('--auth-method', help='Azure auth method (default, interactive)')
-    parser.add_argument('--subscription-id', help='Specific Azure subscription ID to process')
-    parser.add_argument('--management-group-id', help='Azure Management Group ID')
-    parser.add_argument('--management-group-name', help='Azure Management Group name')
-    parser.add_argument('--azure-client-id', help='Azure Service Principal Client ID (appId)')
-    parser.add_argument('--azure-client-secret', help='Azure Service Principal Client Secret')
-    parser.add_argument('--azure-tenant-id', help='Azure Tenant ID')
-    return parser.parse_args()
-
-def main():
-    config = load_config_yaml()
-    
-    args = parse_arguments()
-    
-    netbox_url = args.netbox_url or config.get('netbox', {}).get('url')
-    netbox_token = args.netbox_token or config.get('netbox', {}).get('token')
-    
-    if not netbox_url or not netbox_token:
-        logger.error("Netbox URL and token must be provided either as arguments or in config.yaml")
-        sys.exit(1)
-    
-    log_level = config.get('logging', {}).get('level', 'DEBUG')
-    log_format = config.get('logging', {}).get('format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    logging.basicConfig(level=log_level, format=log_format)
-    
-    filters = config.get('filters', {})
-    if filters.get('regions', {}).get('include'):
-        logger.warning("Region include filters set but not implemented yet")
-    
-    try:
-        logger.info("Starting Azure to Netbox sync")
-        
-        credential = get_azure_credentials(config, args)
-        
-        process_all = config.get('azure', {}).get('subscriptions', {}).get('process_all', True)
-        specific_id = args.subscription_id or config.get('azure', {}).get('subscriptions', {}).get('specific_id')
-        mg_id = args.management_group_id or config.get('azure', {}).get('subscriptions', {}).get('management_group', {}).get('id')
-        mg_name = args.management_group_name or config.get('azure', {}).get('subscriptions', {}).get('management_group', {}).get('name')
-        
-        if mg_id or mg_name:
-            subscriptions = get_management_group_subscriptions(credential, mg_id, mg_name)
-            if not subscriptions:
-                logger.error("No subscriptions found in the specified management group")
-                sys.exit(1)
-        elif specific_id:
-            logger.info(f"Processing only subscription {specific_id}")
-            sub_client = SubscriptionClient(credential)
-            try:
-                sub_details = sub_client.subscriptions.get(specific_id)
-                real_display_name = sub_details.display_name
-                logger.info(f"Retrieved real display name for subscription {specific_id}: {real_display_name}")
-            except Exception as e:
-                logger.warning(f"Could not retrieve display name for {specific_id}: {str(e)}. Using fallback.")
-                real_display_name = f"Subscription {specific_id}"
-            subscriptions = [type('obj', (object,), {
-                'subscription_id': specific_id,
-                'display_name': real_display_name
-            })]
-        elif process_all:
-            subscriptions = get_azure_subscriptions(credential)
-        else:
-            logger.error("No subscription processing method specified")
-            sys.exit(1)
-        
-        all_network_data = []
-        
-        for subscription in subscriptions:
-            subscription_id = subscription.subscription_id
-            subscription_name = subscription.display_name
-
-            # --- SKIP "DELETED" SUBSCRIPTIONS ---
-            if "DELETED" in subscription_name.upper():
-                logger.info(f"Skipping subscription '{subscription_name}' ({subscription_id}) because it is marked as DELETED.")
-                continue
-            # ------------------------------------
-
-            subscription_data = {
-                'subscription_id': subscription_id,
-                'subscription_name': subscription_name,
-                'vnets': []
-            }
-            
-            vnets_data = get_vnets_and_subnets(subscription_id, credential)
-            subscription_data['vnets'] = vnets_data
-            all_network_data.append(subscription_data)
-        
-        sync_to_netbox(all_network_data, netbox_url, netbox_token, config, credential)
-        
-        logger.info("Azure to Netbox sync completed successfully")
-        
-    except Exception as e:
-        logger.error(f"Error during Azure to Netbox sync: {str(e)}", exc_info=True)
-        sys.exit(1)
-
-# --- Organization helpers ---
-
-def get_or_create_site_group(nb, name, description=""):
-    site_group = nb.dcim.site_groups.get(name=name)
-    if site_group:
-        return site_group
-    return nb.dcim.site_groups.create(name=name, description=description, slug=name.lower().replace(" ", "-"))
-
-def get_or_create_tenant_group(nb, name, description="", slug=None):
-    if not slug:
-        slug = name.lower().replace(" ", "-")
-    tenant_group = nb.tenancy.tenant_groups.get(slug=slug)
-    if tenant_group:
-        return tenant_group
-    return nb.tenancy.tenant_groups.create(name=name, description=description, slug=slug)
-
-def get_or_create_tenant(nb, name, group=None, description="", slug=None, tags=None):
-    if not slug:
-        slug = name.lower().replace(" ", "-")
-    tenant = nb.tenancy.tenants.get(slug=slug)
-    if tenant:
-        return tenant
-    group_id = group.id if group else None
-    return nb.tenancy.tenants.create(name=name, group=group_id, description=description, slug=slug, tags=tags or [])
-
-def get_or_create_site(nb, name, group=None, tenant=None, region=None, description="", tags=None):
-    site = nb.dcim.sites.get(name=name)
-    if site:
-        return site
-    group_id = group.id if group else None
-    tenant_id = tenant.id if tenant else None
-    region_id = region.id if region else None
-    return nb.dcim.sites.create(
-        name=name,
-        status='active',
-        group=group_id,
-        tenant=tenant_id,
-        region=region_id,
-        description=description,
-        tags=tags or []
-    )
-
-# --- End Organization helpers ---
-
-if __name__ == "__main__":
-    main()
+                            matching_aggregate = agg
