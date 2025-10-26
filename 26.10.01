@@ -389,15 +389,21 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
                     needs_update = True
                     logger.debug(f"Updated peering_check for {prefix_value} from {current_peering!r} to {new_peering!r}")
             
-            if aggregate_id and (prefix.aggregate is None or prefix.aggregate.id != aggregate_id):
+            # Safely check aggregate
+            current_aggregate_id = getattr(getattr(prefix, 'aggregate', None), 'id', None) if hasattr(prefix, 'aggregate') else None
+            if aggregate_id and current_aggregate_id != aggregate_id:
                 prefix.aggregate = aggregate_id
                 needs_update = True
             
-            if role_id and (prefix.role is None or prefix.role.id != role_id):
+            # Safely check role
+            current_role_id = getattr(getattr(prefix, 'role', None), 'id', None) if hasattr(prefix, 'role') else None
+            if role_id and current_role_id != role_id:
                 prefix.role = role_id
                 needs_update = True
             
-            if tenant_id and (prefix.tenant is None or prefix.tenant.id != tenant_id):
+            # Safely check tenant
+            current_tenant_id = getattr(getattr(prefix, 'tenant', None), 'id', None) if hasattr(prefix, 'tenant') else None
+            if tenant_id and current_tenant_id != tenant_id:
                 prefix.tenant = tenant_id
                 needs_update = True
             
