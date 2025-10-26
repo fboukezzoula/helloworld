@@ -361,7 +361,7 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
             
             needs_update = False
             for key, value in defaults.items():
-                if key == 'parent' or key == 'custom_fields' or key == 'status' or key == 'tags':  
+                if key == 'parent' or key == 'custom_fields' or key == 'status' or key == 'tags' or key == 'description':  
                     continue
                 current_value = getattr(prefix, key, None)
                 logger.debug(f"Checking {key} for {prefix_value}: current={current_value!r}, new={value!r}")
@@ -369,6 +369,16 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
                     setattr(prefix, key, value)
                     needs_update = True
                     logger.debug(f"Updated {key} for {prefix_value} from {current_value!r} to {value!r}")
+            
+            # Special handling for description
+            if 'description' in defaults:
+                new_desc = defaults['description']
+                current_desc = getattr(prefix, 'description', '')
+                logger.debug(f"Checking description for {prefix_value}: current={current_desc!r}, new={new_desc!r}")
+                if current_desc != new_desc:
+                    prefix.description = new_desc
+                    needs_update = True
+                    logger.debug(f"Updated description for {prefix_value} from {current_desc!r} to {new_desc!r}")
             
             # Special handling for status
             if 'status' in defaults:
@@ -463,8 +473,10 @@ def get_or_create_prefix(nb, prefix_value, defaults, subscription_name=None, sub
                     prefix.custom_fields = custom_fields
                 logger.debug(f"Saving prefix {prefix_value} with custom_fields: {prefix.custom_fields}")
                 try:
-                    prefix.save()
-                    logger.info(f"Updated prefix: {prefix_value}")
+                    if prefix.save():
+                        logger.info(f"Successfully updated prefix: {prefix_value}")
+                    else:
+                        logger.warning(f"Update for prefix {prefix_value} failed or no changes detected")
                 except Exception as e:
                     logger.error(f"Failed to save prefix {prefix_value}: {str(e)}")
                     raise
