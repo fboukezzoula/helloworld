@@ -256,5 +256,141 @@ flowchart LR
   PLS --> D
 ```
 
+Usage
+
+1. Run the Azure scanner   
+Examples:
+- All subscriptions, skip MG, debug:
+```text
+SKIP_MG=1 AZ_TIMEOUT=30 ./azure-vnet-scan.sh -a -o out.csv -v
+```
+
+- Specific subscriptions, region filter, 20s timeout:
+```text
+AZ_TIMEOUT=20 ./azure-vnet-scan.sh -s "subId1,Sub Name 2" -r "westeurope,francecentral" -o out.csv -v
+```
+
+- Include IPv6 and theoretical availability for empty spaces:
+```text
+ENABLE_IPV6=1 INCLUDE_EMPTY_SPACE=1 ./azure-vnet-scan.sh -a -o out.csv -v
+```
+
+2. Annotate CSV with NetBox IDs
+```text
+NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=xxx \
+python3 annotate_netbox_ids.py out.csv -o out_with_ids.csv
+```
+
+3. Update NetBox
+- Dry run (see CF values and tag IDs that would be applied):
+```text
+NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=xxx \
+python3 update_list_available_ips.py out_with_ids.csv --dry-run
+```
+
+- Live update (create missing container prefixes if absent):
+```text
+NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=xxx \
+python3 update_list_available_ips.py out_with_ids.csv --create-missing
+```
+
+What gets written to NetBox per prefix:
+
+- list_available_ips (text, emoji):
+  - Example: 🟢 | 🧩 Subnets: 2 | 🔴 Used: 21 | 🟢 Available: 38 | ⚖️ 66.7%
+- ips_used (integer)
+- ips_available (integer)
+- ip-availables-sync tag (added, existing tags preserved)
+
+
+Options and parameters
+
+Scanner (azure-vnet-scan.sh)
+
+- CLI
+  -s: comma-separated subscriptions (ID or name)
+  -m: Management Group (ID or name)
+  -a: scan all accessible subscriptions
+  -r: region filter, comma-separated (e.g., "westeurope,francecentral")
+  -o: output CSV file (default: vnet-scan.csv)
+  -T: az timeout per call (seconds, default: AZ_TIMEOUT or 30)
+  -v / -d: verbose/debug
+  -q: quiet (errors only)
+  -L: log file path
+
+- Env
+  - SKIP_MG=1: skip Management Group mapping (faster)
+  - AZ_TIMEOUT=30: per call timeout
+  - ENABLE_IPV6=1: include IPv6 (best effort)
+  - INCLUDE_EMPTY_SPACE=1: for empty address spaces, available = size − reserved
+  - EXPAND_USED_WITH_RESOURCES=1: include LB/AppGW/AzFW/Bastion/VNGW/PLS in “used” (may double-count)
+  - SKIP_LB=1 | SKIP_APPGW=1 | SKIP_AZFW=1 | SKIP_BASTION=1 | SKIP_VNGW=1 | SKIP_PLS=1: skip specific resource additions
+  - SUBS_EXCLUDE_REGEX="DELETED": exclude subscriptions whose NAME matches this regex (case-insensitive). Set to "" to disable.
+
+Updater (update_list_available_ips.py)
+
+- CLI
+  - --dry-run: print updates; don’t write
+  - --create-missing: create missing container prefixes (global) with tag ip-availables-sync
+  - --strict-unique: when matching by CIDR, only update if exactly one match
+  - --green-th, --orange-th: thresholds for availability color (default 60/30)
+  - --no-create-cf: don’t auto-create custom fields (assume they exist)
+
+- Env
+
+  - NETBOX_URL, NETBOX_TOKEN: required
+  - IP_SYNC_CREATE_DESC: text for new container prefixes’ description (default: “⚠️ PREFIX CREATED BY IP AVAILABILITY SYNC”)
+  - AVAIL_GREEN_TH, AVAIL_ORANGE_TH: thresholds for availability color
+
+Annotator (annotate_netbox_ids.py)
+
+- CLI
+  - -o out_with_ids.csv: output file name
+  - --strict: leave ID blank if multiple matches (default: pick a reasonable best match)
+
+Troubleshooting
+
+- Subscription listing or MG mapping “hangs”:
+  - Use SKIP_MG=1 or install the account extension:
+    - az extension add -n account
+  - Increase AZ_TIMEOUT (default 30s)
+- vnet-gateway jq errors:
+  - We use az resource list (subscription-wide) to avoid RG-specific list calls
+- “mapfile: command not found”:
+  - Ensure you run with bash (not sh). mapfile is a bash builtin.
+- NetBox tags update errors:
+  - NetBox 4.x expects tags as numeric IDs on write. The updater preserves existing tag IDs and adds ip-availables-sync by ID.
+  - If a token can’t read /extras/tags, it still works: IDs are read from the prefix payload.
+- Missing CFs/tags:
+  - The updater auto-creates CFs and the tag (unless --no-create-cf). You can also pre-create via UI.
+
+Security notes
+
+- Store NETBOX_TOKEN securely (e.g., as an environment variable in CI/cron).
+- Prefer least privileges:
+  - Prefixes: view and change
+  - Tags: view (and create if you rely on auto-creation)
+  - Custom fields: view (and create if you rely on auto-creation)
+- Azure: use a service principal with the minimal Reader privileges needed to list network resources.
+
+Automation examples
+
+Nightly cron (03:15)
+
+```text
+15 3 * * * cd /opt/azure-ip && \
+  SKIP_MG=1 AZ_TIMEOUT=30 ./azure-vnet-scan.sh -a -o out.csv -q -L scan.log && \
+  NETBOX_URL=https://netbox.example.com NETBOX_TOKEN=xxxx \
+  python3 update_list_available_ips.py out.csv --create-missing >> netbox-update.log 2>&1
+```
+
+
+
+
+
+
+
+
+
 
   
