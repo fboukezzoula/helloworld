@@ -172,35 +172,34 @@ Sequence
 %%{init: {'theme': 'base', 'logLevel': 'error'}}%%
 sequenceDiagram
   autonumber
-  actor User as Operator/Cron
+  actor User as Operator and Cron
   participant Scan as azure-vnet-scan.sh
-  participant AZ as Azure CLI / ARM
+  participant AZ as Azure CLI and ARM
   participant CSV as out.csv
   participant Upd as update_list_available_ips.py
   participant NB as NetBox API
 
-  User->>Scan: Run with flags/env
-  Scan->>AZ: account list / mg list &lpar;optional&rpar;
-  Scan->>AZ: vnet list
+  User->>Scan: Run with flags and env vars
+  Scan->>AZ: List accounts and MGs (optional)
+  Scan->>AZ: List VNets
   loop per VNet
-    Scan->>AZ: vnet subnet list
-    alt EXPAND_USED_WITH_RESOURCES=1
-      Scan->>AZ: list LBs / AppGWs / AzFW / Bastion / VNGW / PLS
+    Scan->>AZ: List subnets
+    alt EXPAND_USED_WITH_RESOURCES = 1
+      Scan->>AZ: List LBs, AppGWs, AzFW, Bastion, VNGW, PLS
     end
-    Scan->>CSV: write row &lpar;per address space&rpar;
+    Scan->>CSV: Append row per address space
   end
 
   alt Run NetBox updater
-    User->>Upd: execute with CSV
-    Upd->>NB: ensure CFs &plus; tag
+    User->>Upd: Execute with CSV
+    Upd->>NB: Ensure custom fields and tag
     alt --create-missing
-      Upd->>NB: create container prefixes &plus; tag
+      Upd->>NB: Create container prefixes and tag
     end
-    Upd->>NB: update prefixes &lpar;CFs &plus; tags&rpar;
+    Upd->>NB: Update prefixes (CFs and tags)
   else
-    User-->>Scan: finish
-  end
-    
+    User-->>Scan: Finish
+  end    
 ```
 ER mapping (CSV → NetBox)
 
