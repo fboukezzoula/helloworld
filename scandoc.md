@@ -96,6 +96,7 @@ N/A,aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee,Sub-Dev,vnet-dev,10.10.0.0/16,12,210,40
 
 How it works (diagrams)
 Flow
+
 ```mermaid
 %%{init: {'theme': 'base', 'logLevel': 'error', 'flowchart': { 'curve': 'linear', 'htmlLabels': true }}}%%
 flowchart TD
@@ -162,6 +163,7 @@ flowchart TD
   AB --> AD[PATCH prefixes &lpar;CFs &plus; tags&rpar;]:::nb
   AC --> AD
   W -- No --> AE[Done]:::sh
+
 ```
 
 Sequence 
