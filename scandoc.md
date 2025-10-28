@@ -167,6 +167,7 @@ flowchart TD
 ```
 
 Sequence 
+
 ```mermaid
 %%{init: {'theme': 'base', 'logLevel': 'error'}}%%
 sequenceDiagram
@@ -199,6 +200,7 @@ sequenceDiagram
   else
     User-->>Scan: finish
   end
+    
 ```
 ER mapping (CSV → NetBox)
 
