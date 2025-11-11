@@ -1,178 +1,215 @@
-Prérequis
-
-- jq : Un processeur JSON en ligne de commande. Il doit être installé sur l'exécuteur de la GitHub Action (l'image ubuntu-latest l'inclut par défaut).
-- curl : Outil pour effectuer des requêtes HTTP (inclus par défaut).
-- Azure CLI (az) : L'interface de ligne de commande d'Azure. Vous devrez vous connecter en amont dans votre workflow.
-
-- Variables d'environnement/Secrets :
-  - NETBOX_URL: L'URL de votre instance NetBox (ex: https://netbox.example.com).
-  - NETBOX_TOKEN: Votre token d'API NetBox avec les permissions nécessaires (lecture sur les préfixes et tenants, écriture sur les tenants).
-  - AZURE_SUBSCRIPTION_NAME: Le nom de la souscription Azure, passé en paramètre au script.
-
-- Le Script Bash (check_and_update_tenant.sh)
-
-Ce script est conçu pour être robuste et fournir des messages clairs, ce qui est utile pour le débogage dans les logs de GitHub Actions.
-
 ```bash
+
 #!/bin/bash
 
 #-------------------------------------------------------------------------------
-# SCRIPT : check_and_update_tenant.sh (Version améliorée avec logs)
+# SCRIPT: check_and_update_tenant.sh
 #-------------------------------------------------------------------------------
-set -e
-set -o pipefail
-set -u
+#
+# DESCRIPTION:
+# This script integrates with NetBox and Azure to enforce infrastructure-as-code
+# (IaC) governance. It performs the following steps:
+#
+# 1. Checks if a given Azure subscription name (passed as an argument) matches
+#    specific prefixes (gts-, group-, lzsc-).
+# 2. If it matches, it fetches the corresponding Azure Subscription ID.
+# 3. It then searches for a NetBox tenant whose name is exactly the Subscription ID.
+# 4. If a tenant is found, it inspects all its associated IP prefixes.
+# 5. It counts how many of these prefixes have the custom field 'automation' set to
+#    "Managed by Terraform".
+# 6. DECISION:
+#    - If one or more prefixes are managed by Terraform, the script exits
+#      successfully, as the tenant is correctly managed.
+#    - If NO prefixes are managed by Terraform, it flags the tenant for review by
+#      renaming both its name and slug, appending "UPDATEBYTF".
+#
+# This is designed to run in a CI/CD pipeline (e.g., GitHub Actions) to
+# automatically identify tenants that are not yet fully managed by Terraform.
+#
+# USAGE:
+# ./check_and_update_tenant.sh "your-azure-subscription-name"
+#
+# REQUIRED ENVIRONMENT VARIABLES:
+# - NETBOX_URL:   The full URL of your NetBox instance (e.g., https://netbox.mycompany.com)
+# - NETBOX_TOKEN: Your NetBox API token with read/write permissions.
+#
+# DEPENDENCIES:
+# - jq: Command-line JSON processor.
+# - curl: Command-line tool for transferring data with URLs.
+# - az: The Azure CLI, expected to be logged in.
+#
+#-------------------------------------------------------------------------------
 
-# --- VÉRIFICATION DES PARAMÈTRES ET VARIABLES ---
+# --- Script Configuration ---
+# Exit immediately if a command exits with a non-zero status.
+set -e
+# Treat unset variables as an error when substituting.
+set -u
+# Pipelines return the exit status of the last command to exit with a non-zero status.
+set -o pipefail
+
+# --- 1. Validate Parameters and Environment Variables ---
+
+# Check if the subscription name argument was provided.
 if [ -z "${1:-}" ]; then
-  echo "ERREUR : Le nom de la souscription Azure est requis en premier argument." >&2
+  echo "❌ ERROR: Azure subscription name is required as the first argument." >&2
   exit 1
 fi
 AZURE_SUBSCRIPTION_NAME="$1"
 
+# Check for required environment variables.
 if [ -z "${NETBOX_URL:-}" ] || [ -z "${NETBOX_TOKEN:-}" ]; then
-  echo "ERREUR : Les variables d'environnement NETBOX_URL et NETBOX_TOKEN doivent être définies." >&2
+  echo "❌ ERROR: The NETBOX_URL and NETBOX_TOKEN environment variables must be set." >&2
   exit 1
 fi
 
+# Define standard headers for all NetBox API requests.
 NETBOX_HEADERS=(-H "Authorization: Token ${NETBOX_TOKEN}" -H "Content-Type: application/json" -H "Accept: application/json")
 
-# --- ÉTAPE 1: VÉRIFIER LE NOM DE LA SOUSCRIPTION ---
-echo "INFO: Analyse de la souscription : '${AZURE_SUBSCRIPTION_NAME}'"
-if [[ "$AZURE_SUBSCRIPTION_NAME" != "gt-"* && "$AZURE_SUBSCRIPTION_NAME" != "gr-"* && "$AZURE_SUBSCRIPTION_NAME" != "l-"* ]]; then
-  echo "INFO: Le nom de la souscription ne correspond pas aux préfixes requis. Arrêt du processus."
+# --- 2. Check Subscription Name Prefix ---
+
+echo "🔍 Step 1: Analyzing subscription: '${AZURE_SUBSCRIPTION_NAME}'"
+
+if [[ "$AZURE_SUBSCRIPTION_NAME" != "gts-"* && "$AZURE_SUBSCRIPTION_NAME" != "group-"* && "$AZURE_SUBSCRIPTION_NAME" != "lzsc-"* ]]; then
+  echo "✅ INFO: Subscription name does not match the required prefixes (gts-, group-, lzsc-). Skipping."
   exit 0
 fi
-echo "INFO: Le nom de la souscription correspond. Continuation..."
 
-# --- ÉTAPE 2: OBTENIR L'ID DE LA SOUSCRIPTION AZURE ---
-echo "INFO: Recherche de l'ID pour la souscription '${AZURE_SUBSCRIPTION_NAME}'..."
+echo "👍 INFO: Subscription name matches. Proceeding..."
+
+# --- 3. Fetch Azure Subscription ID ---
+
+echo "⚙️ Step 2: Fetching Azure Subscription ID..."
+# Use Azure CLI to get the subscription ID from its name.
+# The 'tsv' output format provides the raw value without quotes.
 SUBSCRIPTION_ID=$(az account show --name "$AZURE_SUBSCRIPTION_NAME" --query id --output tsv)
+
 if [ -z "$SUBSCRIPTION_ID" ]; then
-  echo "ERREUR: Impossible de trouver l'ID pour la souscription Azure '${AZURE_SUBSCRIPTION_NAME}'." >&2
+  echo "❌ ERROR: Could not find ID for Azure subscription '${AZURE_SUBSCRIPTION_NAME}'. Check the name or your Azure permissions." >&2
   exit 1
 fi
-echo "INFO: ID de souscription trouvé : ${SUBSCRIPTION_ID}"
+echo "✅ SUCCESS: Found Subscription ID: ${SUBSCRIPTION_ID}"
 
-# --- ÉTAPE 3: CHERCHER LE TENANT DANS NETBOX ---
+# --- 4. Find Tenant in NetBox ---
+
 TENANT_NAME="$SUBSCRIPTION_ID"
-echo "INFO: Recherche d'un tenant dans NetBox avec le nom : '${TENANT_NAME}'..."
+echo "🔍 Step 3: Searching for NetBox tenant named '${TENANT_NAME}'..."
+
+# Query the NetBox API for a tenant with a name matching the subscription ID.
+# We only care about the first result.
 TENANT_DATA=$(curl -s -X GET "${NETBOX_URL}/api/tenancy/tenants/?name=${TENANT_NAME}" "${NETBOX_HEADERS[@]}" | jq '.results[0]')
 TENANT_ID=$(echo "$TENANT_DATA" | jq -r '.id')
 
+# If the tenant ID is null or empty, the tenant does not exist.
 if [ -z "$TENANT_ID" ] || [ "$TENANT_ID" == "null" ]; then
-  echo "INFO: Aucun tenant trouvé avec le nom '${TENANT_NAME}'. Arrêt du processus."
+  echo "✅ INFO: No tenant found with name '${TENANT_NAME}'. Exiting gracefully."
   exit 0
 fi
-echo "INFO: Tenant trouvé (ID: ${TENANT_ID})."
+echo "✅ SUCCESS: Tenant found (ID: ${TENANT_ID})."
 
-# --- ÉTAPE 4: VÉRIFIER LES PRÉFIXES DU TENANT (Version améliorée) ---
-echo "INFO: Recherche des préfixes pour le tenant ID ${TENANT_ID}..."
+# --- 5. Inspect Prefixes for Terraform Management ---
+
+echo "🔍 Step 4: Inspecting prefixes for tenant ID ${TENANT_ID}..."
+# Fetch all prefixes associated with this tenant. limit=0 means "get all".
 PREFIXES_RESPONSE=$(curl -s -X GET "${NETBOX_URL}/api/ipam/prefixes/?tenant_id=${TENANT_ID}&limit=0" "${NETBOX_HEADERS[@]}")
 
-# Log du nombre total de préfixes
+# Log the total number of prefixes found.
 TOTAL_PREFIXES=$(echo "$PREFIXES_RESPONSE" | jq '.count')
-echo "INFO: Le tenant a ${TOTAL_PREFIXES} préfixe(s) au total."
+echo "ℹ️ INFO: Tenant has ${TOTAL_PREFIXES} prefix(es) in total."
 
-# Vérification du custom field
+# Count how many prefixes have the "automation" custom field set to "Managed by Terraform".
+# - jq extracts the 'automation' field value, filtering out any that are null.
+# - grep -c counts the lines that match the string.
+# - `|| true` ensures the script doesn't fail if grep finds no matches (it would otherwise exit with code 1).
 MATCH_COUNT=$(echo "$PREFIXES_RESPONSE" | \
               jq -r '.results[].custom_fields.automation | select(. != null)' | \
-              grep -c -F "Managed by Terraform" || true) # grep -c compte les correspondances, || true évite l'échec si rien n'est trouvé
+              grep -c -F "Managed by Terraform" || true)
 
-echo "INFO: Trouvé ${MATCH_COUNT} préfixe(s) avec 'Managed by Terraform'."
+echo "ℹ️ INFO: Found ${MATCH_COUNT} prefix(es) with 'Managed by Terraform'."
 
+# --- 6. Make Decision and Take Action ---
 
-# --- ÉTAPE 5: DÉCISION BASÉE SUR LE RÉSULTAT ---
+echo "▶️ Step 5: Making a decision..."
+
 if [ "$MATCH_COUNT" -gt 0 ]; then
-  echo "SUCCÈS: Au moins un préfixe géré par Terraform a été trouvé pour le tenant '${TENANT_NAME}'."
-  echo "INFO: Aucune action requise. Le workflow continue."
+  # If at least one match is found, our job is done.
+  echo "🎉 SUCCESS: At least one prefix is managed by Terraform for tenant '${TENANT_NAME}'."
+  echo "➡️ INFO: No action required. Workflow continues."
   exit 0
 else
-  echo "AVERTISSEMENT: Aucun préfixe géré par Terraform trouvé pour le tenant '${TENANT_NAME}'."
-  echo "ACTION: Renommage du tenant et de son slug."
+  # If no matches are found, the tenant needs to be updated.
+  echo "⚠️ WARNING: No Terraform-managed prefixes found for tenant '${TENANT_NAME}'."
+  echo "🔄 ACTION: Renaming tenant and its slug..."
 
   TENANT_SLUG=$(echo "$TENANT_DATA" | jq -r '.slug')
   NEW_NAME="${TENANT_NAME}UPDATEBYTF"
   NEW_SLUG="${TENANT_SLUG}UPDATEBYTF"
   
+  # Construct the JSON payload for the PATCH request.
   JSON_PAYLOAD=$(jq -n --arg name "$NEW_NAME" --arg slug "$NEW_SLUG" '{name: $name, slug: $slug}')
 
-  echo "INFO: Nouveau nom: ${NEW_NAME}"
-  echo "INFO: Nouveau slug: ${NEW_SLUG}"
+  echo "ℹ️ INFO: New name will be: ${NEW_NAME}"
+  echo "ℹ️ INFO: New slug will be: ${NEW_SLUG}"
 
+  # Send the PATCH request to update the tenant in NetBox.
+  # -w "%{http_code}" outputs only the HTTP status code.
+  # -o /dev/null discards the response body.
   HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
     "${NETBOX_URL}/api/tenancy/tenants/${TENANT_ID}/" \
     "${NETBOX_HEADERS[@]}" \
     --data "$JSON_PAYLOAD")
 
   if [ "$HTTP_STATUS" -eq 200 ]; then
-    echo "SUCCÈS: Le tenant a été renommé avec succès."
+    echo "🎉 SUCCESS: Tenant has been renamed successfully."
     exit 0
   else
-    echo "ERREUR: La mise à jour du tenant a échoué. Statut HTTP : ${HTTP_STATUS}" >&2
-    # Pour le débogage, vous pouvez afficher la réponse d'erreur de NetBox
-    # curl -s -X PATCH "${NETBOX_URL}/api/tenancy/tenants/${TENANT_ID}/" "${NETBOX_HEADERS[@]}" --data "$JSON_PAYLOAD"
+    echo "❌ ERROR: Failed to update the tenant. NetBox API returned HTTP Status: ${HTTP_STATUS}" >&2
     exit 1
   fi
 fi
+
+
 ```
 
 
-- Exemple d'intégration dans un Workflow GitHub Actions
-  
-  - Voici comment vous pourriez utiliser ce script dans un fichier .github/workflows/main.yml. Cet exemple suppose que le nom de la souscription est une entrée du workflow.
-
-```yaml
-name: Check NetBox Tenants
-
-on:
-  workflow_dispatch:
-    inputs:
-      azure_subscription_name:
-        description: 'Nom de la souscription Azure à vérifier'
-        required: true
-        type: string
-
-jobs:
-  check-and-update:
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: 'Azure Login'
-        uses: azure/login@v1
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }} # Secret contenant les infos du Service Principal
-
-      - name: 'Install dependencies'
-        run: |
-          # az est déjà installé avec azure/login, jq et curl sont sur ubuntu-latest
-          echo "Dependencies are ready."
-
-      - name: 'Run Tenant Check Script'
-        env:
-          NETBOX_URL: ${{ secrets.NETBOX_URL }}
-          NETBOX_TOKEN: ${{ secrets.NETBOX_API_TOKEN }}
-        run: |
-          # Rendre le script exécutable
-          chmod +x ./check_and_update_tenant.sh
-          # Exécuter le script en passant le nom de la souscription
-          ./check_and_update_tenant.sh "${{ github.event.inputs.azure_subscription_name }}"
-```          
-
-Configuration des secrets GitHub :
-
-Dans votre dépôt GitHub, allez dans Settings > Secrets and variables > Actions et ajoutez les secrets suivants :
-
-- AZURE_CREDENTIALS : Les identifiants de votre Service Principal Azure au format JSON.
-- NETBOX_URL : L'URL complète de votre NetBox.
-- NETBOX_API_TOKEN : Le token d'API NetBox.
-- Ce workflow vous permettra de déclencher manuellement la vérification pour une souscription donnée.
 
 
 
+# Scenario 1: Tenant is correctly managed
+
+```text
+🔍 Step 1: Analyzing subscription: 'adam-496875-g3c-hml'
+👍 INFO: Subscription name matches. Proceeding...
+⚙️ Step 2: Fetching Azure Subscription ID...
+✅ SUCCESS: Found Subscription ID: 03ed1681-c0ea-49e8-be69-d6a65e5a88a9
+🔍 Step 3: Searching for NetBox tenant named '03ed1681-c0ea-49e8-be69-d6a65e5a88a9'...
+✅ SUCCESS: Tenant found (ID: 678).
+🔍 Step 4: Inspecting prefixes for tenant ID 678...
+ℹ️ INFO: Tenant has 5 prefix(es) in total.
+ℹ️ INFO: Found 5 prefix(es) with 'Managed by Terraform'.
+▶️ Step 5: Making a decision...
+🎉 SUCCESS: At least one prefix is managed by Terraform for tenant '03ed1681-c0ea-49e8-be69-d6a65e5a88a9'.
+➡️ INFO: No action required. Workflow continues.
+```
 
 
+# Scenario 2: Tenant needs to be updated (your original case)
 
+```text
+🔍 Step 1: Analyzing subscription: 'adam-496875-g3c-hml'
+👍 INFO: Subscription name matches. Proceeding...
+⚙️ Step 2: Fetching Azure Subscription ID...
+✅ SUCCESS: Found Subscription ID: 03ed1681-c0ea-49e8-be69-d6a65e5a88a9
+🔍 Step 3: Searching for NetBox tenant named '03ed1681-c0ea-49e8-be69-d6a65e5a88a9'...
+✅ SUCCESS: Tenant found (ID: 678).
+🔍 Step 4: Inspecting prefixes for tenant ID 678...
+ℹ️ INFO: Tenant has 1 prefix(es) in total.
+ℹ️ INFO: Found 0 prefix(es) with 'Managed by Terraform'.
+▶️ Step 5: Making a decision...
+⚠️ WARNING: No Terraform-managed prefixes found for tenant '03ed1681-c0ea-49e8-be69-d6a65e5a88a9'.
+🔄 ACTION: Renaming tenant and its slug...
+ℹ️ INFO: New name will be: 03ed1681-c0ea-49e8-be69-d6a65e5a88a9UPDATEBYTF
+ℹ️ INFO: New slug will be: 03ed1681-c0ea-49e8-be69-d6a65e5a88a9UPDATEBYTF
+🎉 SUCCESS: Tenant has been renamed successfully.
+```
+          
