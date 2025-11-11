@@ -63,7 +63,7 @@ NETBOX_HEADERS=(-H "Authorization: Token ${NETBOX_TOKEN}" -H "Content-Type: appl
 echo "INFO: Analyse de la souscription : '${AZURE_SUBSCRIPTION_NAME}'"
 
 if [[ "$AZURE_SUBSCRIPTION_NAME" != "azure-"* && "$AZURE_SUBSCRIPTION_NAME" != "azure2-"* && "$AZURE_SUBSCRIPTION_NAME" != "azure3-"* ]]; then
-  echo "INFO: Le nom de la souscription ne correspond pas aux préfixes requis (gts-, group-, lzsc-). Arrêt du processus."
+  echo "INFO: Le nom de la souscription ne correspond pas aux préfixes requis . Arrêt du processus."
   exit 0
 fi
 
