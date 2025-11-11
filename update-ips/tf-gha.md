@@ -17,33 +17,13 @@ Ce script est conçu pour être robuste et fournir des messages clairs, ce qui e
 #!/bin/bash
 
 #-------------------------------------------------------------------------------
-# SCRIPT : check_and_update_tenant.sh
+# SCRIPT : check_and_update_tenant.sh (Version améliorée avec logs)
 #-------------------------------------------------------------------------------
-# DESCRIPTION:
-# Ce script vérifie si une souscription Azure, dont le nom correspond à certains
-# préfixes (gts-, group-, lzsc-), est associée à un tenant dans NetBox.
-# Si un tenant existe (nom = ID de la souscription), il vérifie si l'un de ses
-# préfixes IP est géré par Terraform (via un custom field 'automation').
-# Si aucun préfixe n'est géré par Terraform, le tenant est renommé pour
-# indiquer qu'une mise à jour est nécessaire.
-#
-# USAGE:
-# ./check_and_update_tenant.sh "nom-de-la-souscription-azure"
-#
-# VARIABLES D'ENVIRONNEMENT REQUISES:
-# - NETBOX_URL: URL de l'instance NetBox (ex: https://netbox.example.com)
-# - NETBOX_TOKEN: Token d'API NetBox
-#-------------------------------------------------------------------------------
-
-# Quitte immédiatement si une commande échoue
 set -e
-# Gère les erreurs dans les pipelines
 set -o pipefail
-# Traite les variables non définies comme des erreurs
 set -u
 
 # --- VÉRIFICATION DES PARAMÈTRES ET VARIABLES ---
-
 if [ -z "${1:-}" ]; then
   echo "ERREUR : Le nom de la souscription Azure est requis en premier argument." >&2
   exit 1
@@ -55,40 +35,29 @@ if [ -z "${NETBOX_URL:-}" ] || [ -z "${NETBOX_TOKEN:-}" ]; then
   exit 1
 fi
 
-# Headers pour les requêtes NetBox
 NETBOX_HEADERS=(-H "Authorization: Token ${NETBOX_TOKEN}" -H "Content-Type: application/json" -H "Accept: application/json")
 
 # --- ÉTAPE 1: VÉRIFIER LE NOM DE LA SOUSCRIPTION ---
-
 echo "INFO: Analyse de la souscription : '${AZURE_SUBSCRIPTION_NAME}'"
-
-if [[ "$AZURE_SUBSCRIPTION_NAME" != "azure-"* && "$AZURE_SUBSCRIPTION_NAME" != "azure2-"* && "$AZURE_SUBSCRIPTION_NAME" != "azure3-"* ]]; then
-  echo "INFO: Le nom de la souscription ne correspond pas aux préfixes requis . Arrêt du processus."
+if [[ "$AZURE_SUBSCRIPTION_NAME" != "gt-"* && "$AZURE_SUBSCRIPTION_NAME" != "gr-"* && "$AZURE_SUBSCRIPTION_NAME" != "l-"* ]]; then
+  echo "INFO: Le nom de la souscription ne correspond pas aux préfixes requis. Arrêt du processus."
   exit 0
 fi
-
 echo "INFO: Le nom de la souscription correspond. Continuation..."
 
 # --- ÉTAPE 2: OBTENIR L'ID DE LA SOUSCRIPTION AZURE ---
-
 echo "INFO: Recherche de l'ID pour la souscription '${AZURE_SUBSCRIPTION_NAME}'..."
 SUBSCRIPTION_ID=$(az account show --name "$AZURE_SUBSCRIPTION_NAME" --query id --output tsv)
-
 if [ -z "$SUBSCRIPTION_ID" ]; then
-  echo "ERREUR: Impossible de trouver l'ID pour la souscription Azure '${AZURE_SUBSCRIPTION_NAME}'. Vérifiez le nom ou vos permissions." >&2
+  echo "ERREUR: Impossible de trouver l'ID pour la souscription Azure '${AZURE_SUBSCRIPTION_NAME}'." >&2
   exit 1
 fi
 echo "INFO: ID de souscription trouvé : ${SUBSCRIPTION_ID}"
 
 # --- ÉTAPE 3: CHERCHER LE TENANT DANS NETBOX ---
-
 TENANT_NAME="$SUBSCRIPTION_ID"
 echo "INFO: Recherche d'un tenant dans NetBox avec le nom : '${TENANT_NAME}'..."
-
-# Note: On filtre par 'name__iexact' pour être insensible à la casse, bien que les UUID soient normalement en minuscules.
-# On récupère l'ID, le nom et le slug du tenant.
 TENANT_DATA=$(curl -s -X GET "${NETBOX_URL}/api/tenancy/tenants/?name=${TENANT_NAME}" "${NETBOX_HEADERS[@]}" | jq '.results[0]')
-
 TENANT_ID=$(echo "$TENANT_DATA" | jq -r '.id')
 
 if [ -z "$TENANT_ID" ] || [ "$TENANT_ID" == "null" ]; then
@@ -97,26 +66,28 @@ if [ -z "$TENANT_ID" ] || [ "$TENANT_ID" == "null" ]; then
 fi
 echo "INFO: Tenant trouvé (ID: ${TENANT_ID})."
 
-# --- ÉTAPE 4: VÉRIFIER LES PRÉFIXES DU TENANT ---
-
+# --- ÉTAPE 4: VÉRIFIER LES PRÉFIXES DU TENANT (Version améliorée) ---
 echo "INFO: Recherche des préfixes pour le tenant ID ${TENANT_ID}..."
+PREFIXES_RESPONSE=$(curl -s -X GET "${NETBOX_URL}/api/ipam/prefixes/?tenant_id=${TENANT_ID}&limit=0" "${NETBOX_HEADERS[@]}")
 
-# On récupère tous les préfixes du tenant et on vérifie directement la valeur du custom field "automation"
-# jq sélectionne les valeurs non nulles du champ, grep cherche la chaîne, et wc compte les lignes.
-MATCH_COUNT=$(curl -s -X GET "${NETBOX_URL}/api/ipam/prefixes/?tenant_id=${TENANT_ID}&limit=0" "${NETBOX_HEADERS[@]}" | \
+# Log du nombre total de préfixes
+TOTAL_PREFIXES=$(echo "$PREFIXES_RESPONSE" | jq '.count')
+echo "INFO: Le tenant a ${TOTAL_PREFIXES} préfixe(s) au total."
+
+# Vérification du custom field
+MATCH_COUNT=$(echo "$PREFIXES_RESPONSE" | \
               jq -r '.results[].custom_fields.automation | select(. != null)' | \
-              grep -F "Managed by Terraform" | \
-              wc -l)
+              grep -c -F "Managed by Terraform" || true) # grep -c compte les correspondances, || true évite l'échec si rien n'est trouvé
+
+echo "INFO: Trouvé ${MATCH_COUNT} préfixe(s) avec 'Managed by Terraform'."
+
 
 # --- ÉTAPE 5: DÉCISION BASÉE SUR LE RÉSULTAT ---
-
 if [ "$MATCH_COUNT" -gt 0 ]; then
-  # Au moins un préfixe géré par Terraform a été trouvé
-  echo "SUCCÈS: Au moins un préfixe avec 'Managed by Terraform' a été trouvé pour le tenant '${TENANT_NAME}'."
+  echo "SUCCÈS: Au moins un préfixe géré par Terraform a été trouvé pour le tenant '${TENANT_NAME}'."
   echo "INFO: Aucune action requise. Le workflow continue."
   exit 0
 else
-  # Aucun préfixe géré par Terraform n'a été trouvé
   echo "AVERTISSEMENT: Aucun préfixe géré par Terraform trouvé pour le tenant '${TENANT_NAME}'."
   echo "ACTION: Renommage du tenant et de son slug."
 
@@ -124,13 +95,11 @@ else
   NEW_NAME="${TENANT_NAME}UPDATEBYTF"
   NEW_SLUG="${TENANT_SLUG}UPDATEBYTF"
   
-  # Création du corps de la requête PATCH en JSON
   JSON_PAYLOAD=$(jq -n --arg name "$NEW_NAME" --arg slug "$NEW_SLUG" '{name: $name, slug: $slug}')
 
   echo "INFO: Nouveau nom: ${NEW_NAME}"
   echo "INFO: Nouveau slug: ${NEW_SLUG}"
 
-  # Envoi de la requête de mise à jour
   HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X PATCH \
     "${NETBOX_URL}/api/tenancy/tenants/${TENANT_ID}/" \
     "${NETBOX_HEADERS[@]}" \
@@ -141,6 +110,8 @@ else
     exit 0
   else
     echo "ERREUR: La mise à jour du tenant a échoué. Statut HTTP : ${HTTP_STATUS}" >&2
+    # Pour le débogage, vous pouvez afficher la réponse d'erreur de NetBox
+    # curl -s -X PATCH "${NETBOX_URL}/api/tenancy/tenants/${TENANT_ID}/" "${NETBOX_HEADERS[@]}" --data "$JSON_PAYLOAD"
     exit 1
   fi
 fi
