@@ -1,5 +1,22 @@
 ```bash
 
+
+      - name: 'Debug Network Connectivity to NetBox'
+        run: |
+          echo "Attempting to connect to NetBox URL: ${{ secrets.NETBOX_URL }}"
+          
+          # Extract the hostname from the URL for testing
+          NETBOX_HOST=$(echo "${{ secrets.NETBOX_URL }}" | sed -e 's|https://\?||' -e 's|/.*$||')
+          echo "Testing connectivity to host: $NETBOX_HOST"
+          
+          # Use curl with verbose output and a short timeout. This will show connection details.
+          # We add '-k' or '--insecure' in case you use a self-signed certificate internally, 
+          # which is common. This allows the TLS handshake to proceed for the test.
+          curl -v --connect-timeout 15 -k "${{ secrets.NETBOX_URL }}/api/"
+          
+          echo "Network test complete. If the above command timed out, the runner cannot reach the host."
+
+
 ```
 
 
