@@ -157,8 +157,122 @@ jobs:
 - Idempotency: The script runs git diff --quiet. If the target repo already has the exact same content as the source file, it skips the PR creation. This prevents spamming empty PRs.
 - Pull Request: If the content differs, it creates a branch named update-readme-<timestamp> and opens a PR automatically.
 
+```yaml 
+name: Deploy Readme via PR
 
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo_name:
+        description: 'Target repo name (or "all")'
+        required: true
+        default: 'all'
+        type: string
 
+env:
+  TARGET_ORG: "orgaB"
+  GIT_USER_NAME: "GitHub Action Bot"
+  GIT_USER_EMAIL: "bot@your-company.com"
+  # IMPORTANT: Ensure this is just the domain (e.g., github.company.com), no https://
+  GH_HOST: "github.your-company.com" 
+
+jobs:
+  distribute-readme:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Repo (sourceA)
+        uses: actions/checkout@v3
+        with:
+          path: source_repo
+
+      - name: Authenticate GitHub CLI & Configure Git
+        run: |
+          # 1. Authenticate the CLI
+          echo "${{ secrets.PAT_TOKEN }}" | gh auth login --with-token --hostname ${{ env.GH_HOST }}
+          
+          # 2. CRITICAL FIX: Configure git to use GitHub CLI as the credential helper
+          # This allows 'git push' to automatically use the token from 'gh'
+          gh auth setup-git --hostname ${{ env.GH_HOST }}
+          
+          # 3. Global Git config for the bot identity
+          git config --global user.name "${{ env.GIT_USER_NAME }}"
+          git config --global user.email "${{ env.GIT_USER_EMAIL }}"
+
+      - name: Process Deployment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          INPUT_REPO: ${{ inputs.target_repo_name }}
+        run: |
+          declare -a DEPLOYMENTS
+          SOURCE_DIR="$GITHUB_WORKSPACE/source_repo"
+
+          if [ "$INPUT_REPO" == "all" ]; then
+            echo "Mode: Global deployment (ALL)"
+            # List of targets
+            DEPLOYMENTS+=("REPO_A|readme.md")
+            DEPLOYMENTS+=("REPO_B|readme.md")
+            DEPLOYMENTS+=("REPO_C|readme.md")
+          else
+            echo "Mode: Targeted deployment for $INPUT_REPO"
+            SPECIFIC_SOURCE="readme${INPUT_REPO}.md"
+            
+            if [ ! -f "$SOURCE_DIR/$SPECIFIC_SOURCE" ]; then
+              echo "::error::Source file $SPECIFIC_SOURCE does not exist."
+              exit 1
+            fi
+            DEPLOYMENTS+=("$INPUT_REPO|$SPECIFIC_SOURCE")
+          fi
+
+          process_repo() {
+            local target_repo=$1
+            local source_file_name=$2
+            local target_full_path="$TARGET_ORG/$target_repo"
+            local branch_name="update-readme-$(date +%s)" 
+
+            echo "---------------------------------------------------"
+            echo "Processing: $target_full_path"
+
+            rm -rf temp_work_dir
+            mkdir temp_work_dir
+            cd temp_work_dir
+
+            # Clone using GH CLI (uses auth from step above)
+            gh repo clone "$target_full_path" . || { echo "Failed to clone"; return; }
+
+            git checkout -b "$branch_name"
+            cp "$SOURCE_DIR/$source_file_name" ./readme.md
+
+            if git diff --quiet; then
+              echo "No changes detected. Skipping."
+            else
+              echo "Changes detected. Committing..."
+              git add readme.md
+              git commit -m "docs: update README from sourceA"
+              
+              # This 'git push' will now succeed because of 'gh auth setup-git'
+              echo "Pushing branch..."
+              git push origin "$branch_name"
+
+              echo "Creating PR..."
+              gh pr create \
+                --repo "$target_full_path" \
+                --base "main" \
+                --head "$branch_name" \
+                --title "Update README (Automated)" \
+                --body "Automatic update of README.md generated from $GITHUB_REPOSITORY."
+              
+              echo "Success!"
+            fi
+            cd ../..
+          }
+
+          for item in "${DEPLOYMENTS[@]}"; do
+            repo="${item%%|*}"
+            src="${item##*|}"
+            process_repo "$repo" "$src"
+          done
+```          
 
 
 
