@@ -1,3 +1,6 @@
+# This replaces line 1 strictly with the repo name formatted as a Markdown Title
+sed -i "1s/.*/# $target_repo/" ./readme.md
+
 ## Prerequisites
 
 - Personal Access Token (PAT):
