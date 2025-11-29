@@ -1,4 +1,35 @@
 ```bash
+    while IFS= read -r subscription_id; do
+        [[ -z "${subscription_id}" ]] && continue
+        
+        ((processed++))
+        
+        # DEBUG 1: Afficher l'ID brut avec ses caractères
+        echo "[DEBUG 1] subscription_id raw: '${subscription_id}'" >&2
+        echo "[DEBUG 1] subscription_id length: ${#subscription_id}" >&2
+        
+        # DEBUG 2: Tester az account show sans redirection
+        echo "[DEBUG 2] Testing az account show..." >&2
+        az account show --subscription "${subscription_id}" --query "name" -o tsv
+        echo "[DEBUG 2] az exit code: $?" >&2
+        
+        local sub_name
+        sub_name=$(az account show --subscription "${subscription_id}" --query "name" -o tsv 2>/dev/null || echo "${subscription_id}")
+        
+        # DEBUG 3: Résultat
+        echo "[DEBUG 3] sub_name: '${sub_name}'" >&2
+        
+        # Arrêter après la première itération pour voir le debug
+        echo "[DEBUG] Stopping after first subscription for debug" >&2
+        exit 0
+        
+        # ... reste du code
+
+```
+
+
+
+```bash
 #-------------------------------------------------------------------------------
 # RÉCUPÉRER LES ROLE ASSIGNMENTS POUR LE GROUPE POWERUSERS D'UNE SOUSCRIPTION
 #-------------------------------------------------------------------------------
