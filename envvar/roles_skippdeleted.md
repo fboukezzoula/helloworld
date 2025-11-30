@@ -46,7 +46,7 @@ analyze_subscription_duplicates() {
         if [[ ${version_count} -gt 1 ]]; then
             ((++duplicates_found)) || true
             
-            # Afficher l'en-tête une seule fois - TOUT VERS STDERR
+            # Afficher l'en-tête une seule fois
             if [[ "${has_duplicates}" == "false" ]]; then
                 has_duplicates=true
                 echo "" >&2
@@ -69,7 +69,16 @@ analyze_subscription_duplicates() {
         fi
     done
     
-    # SEULE SORTIE VERS STDOUT = la valeur numérique
+    # === NOUVEAU : Résumé par souscription ===
+    if [[ ${duplicates_found} -gt 0 ]]; then
+        echo "" >&2
+        echo -e "  ${BOLD}Résumé pour cette souscription:${NC}" >&2
+        echo -e "  └─ Rôles dupliqués détectés: ${RED}${duplicates_found}${NC}" >&2
+        print_sub_separator >&2
+    fi
+    # ==========================================
+    
+    # Seule sortie vers stdout = la valeur numérique
     echo "${duplicates_found}"
 }
 ```    
