@@ -36,7 +36,7 @@ analyze_subscription_duplicates() {
         
     done < <(echo "${assignments_json}" | jq -r '.[].roleDefinitionName')
     
-    # Détecter et afficher les doublons directement (sans stockage intermédiaire)
+    # Détecter et afficher les doublons
     local has_duplicates=false
     
     for base_name in "${!role_versions[@]}"; do
@@ -44,34 +44,37 @@ analyze_subscription_duplicates() {
         local version_count=$(echo "${versions}" | tr ',' '\n' | wc -l)
         
         if [[ ${version_count} -gt 1 ]]; then
-            ((++duplicates_found))
+            ((++duplicates_found)) || true
             
-            # Afficher l'en-tête une seule fois
+            # Afficher l'en-tête une seule fois - TOUT VERS STDERR
             if [[ "${has_duplicates}" == "false" ]]; then
                 has_duplicates=true
-                echo ""
-                log_subscription "${subscription_name}"
-                echo -e "  Groupe: ${YELLOW}${group_name}${NC}"
-                print_sub_separator
+                echo "" >&2
+                log_subscription "${subscription_name}" >&2
+                echo -e "  Groupe: ${YELLOW}${group_name}${NC}" >&2
+                print_sub_separator >&2
             fi
             
             local formatted_versions=$(echo "${versions}" | tr ',' '\n' | sort -V | tr '\n' ',' | sed 's/,$//' | sed 's/,/, /g')
             
-            log_finding "Duplicate role \"${base_name}\": ${YELLOW}${formatted_versions}${NC}"
-            echo "           Rôles assignés:"
+            log_finding "Duplicate role \"${base_name}\": ${YELLOW}${formatted_versions}${NC}" >&2
+            echo "           Rôles assignés:" >&2
             
             # Afficher chaque version
             for version in $(echo "${versions}" | tr ',' '\n' | sort -V); do
                 local key="${base_name}|${version}"
                 local full_name="${role_full_names[${key}]:-${base_name}${version}}"
-                echo "             • ${full_name}"
+                echo "             • ${full_name}" >&2
             done
         fi
     done
     
+    # SEULE SORTIE VERS STDOUT = la valeur numérique
     echo "${duplicates_found}"
 }
 ```    
+
+
     
     
 ```bash
