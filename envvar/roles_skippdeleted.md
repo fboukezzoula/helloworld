@@ -1,4 +1,80 @@
-    ```bash
+```bash
+#-------------------------------------------------------------------------------
+# ANALYSER LES DOUBLONS POUR UNE SOUSCRIPTION DONNÉE
+#-------------------------------------------------------------------------------
+analyze_subscription_duplicates() {
+    local subscription_name="$1"
+    local group_name="$2"
+    local assignments_json="$3"
+    
+    declare -A role_versions
+    declare -A role_full_names
+    
+    local duplicates_found=0
+    
+    # Parser les assignments
+    while IFS= read -r role_name; do
+        [[ -z "${role_name}" ]] || [[ "${role_name}" == "null" ]] && continue
+        
+        local parsed=$(extract_role_base_and_version "${role_name}")
+        local base_name=$(echo "${parsed}" | cut -d'|' -f1)
+        local version=$(echo "${parsed}" | cut -d'|' -f2)
+        
+        [[ "${version}" == "no_version" ]] && continue
+        
+        # Stocker le nom complet
+        role_full_names["${base_name}|${version}"]="${role_name}"
+        
+        # Ajouter la version
+        if [[ -z "${role_versions[${base_name}]:-}" ]]; then
+            role_versions["${base_name}"]="${version}"
+        else
+            if [[ ! "${role_versions[${base_name}]}" =~ (^|,)${version}(,|$) ]]; then
+                role_versions["${base_name}"]="${role_versions[${base_name}]},${version}"
+            fi
+        fi
+        
+    done < <(echo "${assignments_json}" | jq -r '.[].roleDefinitionName')
+    
+    # Détecter et afficher les doublons directement (sans stockage intermédiaire)
+    local has_duplicates=false
+    
+    for base_name in "${!role_versions[@]}"; do
+        local versions="${role_versions[${base_name}]}"
+        local version_count=$(echo "${versions}" | tr ',' '\n' | wc -l)
+        
+        if [[ ${version_count} -gt 1 ]]; then
+            ((++duplicates_found))
+            
+            # Afficher l'en-tête une seule fois
+            if [[ "${has_duplicates}" == "false" ]]; then
+                has_duplicates=true
+                echo ""
+                log_subscription "${subscription_name}"
+                echo -e "  Groupe: ${YELLOW}${group_name}${NC}"
+                print_sub_separator
+            fi
+            
+            local formatted_versions=$(echo "${versions}" | tr ',' '\n' | sort -V | tr '\n' ',' | sed 's/,$//' | sed 's/,/, /g')
+            
+            log_finding "Duplicate role \"${base_name}\": ${YELLOW}${formatted_versions}${NC}"
+            echo "           Rôles assignés:"
+            
+            # Afficher chaque version
+            for version in $(echo "${versions}" | tr ',' '\n' | sort -V); do
+                local key="${base_name}|${version}"
+                local full_name="${role_full_names[${key}]:-${base_name}${version}}"
+                echo "             • ${full_name}"
+            done
+        fi
+    done
+    
+    echo "${duplicates_found}"
+}
+```    
+    
+    
+```bash
     while IFS= read -r subscription_id; do
         [[ -z "${subscription_id}" ]] && continue
         
