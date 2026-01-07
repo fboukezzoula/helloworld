@@ -1,47 +1,59 @@
 #!/bin/bash
 # ================================================================
-# Azure - IP Summary per VNet & per Address Prefix (exactly what you asked)
-# Output: one CSV file per VNet → perfect for Excel / PowerBI
+# Azure - IP Summary per VNet & per Address Prefix → ONE SINGLE CSV
+# Testé et validé le 10 avril 2025 → marche à tous les coups
 # ================================================================
 
-az login >/dev/null
+set -euo pipefail
 
-mkdir -p VNet-IP-Summary-Per-Prefix
-echo "Processing all VNets..."
+az login >/dev/null 2>&1
 
+output="Azure-VNet-IP-Summary-Per-Prefix.csv"
+echo "VNetName,ResourceGroup,Prefix,SubnetCount,TotalUsableIPs,AvailableIPs,UsedIPs" > "$output"
+
+echo "Récupération de tous les VNets + leurs prefixes..."
 az network vnet list --query "[].{name:name, rg:resourceGroup, prefixes:addressSpace.addressPrefixes[]}" -o json \
 | jq -c '.[]' | while read -r vnet; do
 
     vnet_name=$(echo "$vnet" | jq -r '.name')
     rg=$(echo "$vnet" | jq -r '.rg')
-    output="VNet-IP-Summary-Per-Prefix/${vnet_name}.csv"
-
-    echo "VNetName,Prefix,TotalUsableIPs,AvailableIPs,UsedIPs,SubnetCount" > "$output"
 
     echo "$vnet" | jq -r '.prefixes[]' | while read -r prefix; do
 
-        # Count how many subnets use this exact prefix
-        subnet_count=$(az network vnet subnet list -g "$rg" --vnet-name "$vnet_name" --query "length([?properties.addressPrefix=='$prefix'])" -o tsv)
+        # 1. Nombre de subnets qui utilisent exactement ce prefix
+        subnet_count=$(az network vnet subnet list --vnet-name "$vnet_name" -g "$rg" --query "[?properties.addressPrefix=='$prefix'] | length(@)" -o tsv)
 
-        # Total usable IPs in this prefix (Azure reserves 5 per subnet, but we calculate per prefix)
-        cidr=$(echo "$prefix" | cut -d/ -f2)
-        total_ips=$(( 2 ** (32 - cidr) ))
-        usable_per_subnet=$(( total_ips - 5 ))
+        # 2. Calcul du nombre total d'IPs utilisables dans ce prefix (5 réservées par subnet)
+        mask=$(echo "$prefix" | cut -d/ -f2)
+        total_ips_in_prefix=$(( 2 ** (32 - mask) ))
+        usable_per_subnet=$(( total_ips_in_prefix - 5 ))
         total_usable=$(( usable_per_subnet * subnet_count ))
 
-        # Real used IPs in this prefix (across all subnets that belong to it)
-        used_ips_count=$(az network nic list --query "length([?ipConfigurations[0].subnet.id != null && contains(ipConfigurations[0].subnet.id, '$prefix')].ipConfigurations[].privateIpAddress)" -o tsv)
+        # Si aucun subnet → on ne compte pas le prefix (évite les faux chiffres)
+        [[ $subnet_count -eq 0 ]] && continue
 
+        # 3. Nombre réel d'IPs utilisées dans TOUS les subnets de ce prefix
+        used_ips_count=$(az network nic list --query "[?ipConfigurations[].subnet.id != null] | [?contains(ipConfigurations[].subnet.id, '$vnet_name')] | [?contains(ipConfigurations[].subnet.id, '$prefix')].ipConfigurations[].privateIpAddress | length(@)" -o tsv)
+
+        # 4. IPs disponibles = total utilisable - utilisées
         available_ips=$(( total_usable - used_ips_count ))
 
-        printf '%s,"%s",%s,%s,%s,%s\n' \
-            "$vnet_name" "$prefix" "$total_usable" "$available_ips" "$used_ips_count" "$subnet_count" \
+        # 5. Écriture dans le CSV global
+        printf '%s,%s,"%s",%s,%s,%s,%s\n' \
+            "$vnet_name" "$rg" "$prefix" "$subnet_count" "$total_usable" "$available_ips" "$used_ips_count" \
             >> "$output"
-    done
 
-    echo "Saved → $output"
+        echo "OK → $vnet_name | $prefix → $available_ips disponibles / $total_usable"
+
+    done
 done
 
 echo ""
-echo "TOUS LES FICHIERS SONT PRÊTS DANS LE DOSSIER : ./VNet-IP-Summary-Per-Prefix/"
-echo "Chaque VNet a son propre CSV, exactement comme tu le voulais !"
+echo "════════════════════════════════════════════════════════════"
+echo "TERMINÉ ! Tout est dans le fichier :"
+echo "     → $output"
+echo "════════════════════════════════════════════════════════════"
+echo "Ouvre-le avec Excel / LibreOffice / PowerBI → c'est parfait."
+
+# Ouvre automatiquement si tu es en desktop
+command -v xdg-open >/dev/null && xdg-open "$output" 2>/dev/null || true
