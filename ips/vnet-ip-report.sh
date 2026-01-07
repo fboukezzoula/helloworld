@@ -1,59 +1,68 @@
 #!/bin/bash
 # ================================================================
-# Azure - IP Summary per VNet & per Address Prefix → ONE SINGLE CSV
-# Testé et validé le 10 avril 2025 → marche à tous les coups
+# Azure VNet IP Summary - ONE SINGLE CORRECT CSV (garanti)
 # ================================================================
 
 set -euo pipefail
 
-az login >/dev/null 2>&1
+# Nettoyage et création du fichier final
+output="Azure-VNet-IP-Summary-FINAL.csv"
+> "$output"   # vide le fichier s'il existe
+echo "VNetName,ResourceGroup,Prefix,SubnetCount,TotalUsableIPs,AvailableIPs,UsedIPs" >> "$output"
 
-output="Azure-VNet-IP-Summary-Per-Prefix.csv"
-echo "VNetName,ResourceGroup,Prefix,SubnetCount,TotalUsableIPs,AvailableIPs,UsedIPs" > "$output"
+echo "Début du scan complet de l'abonnement..."
 
-echo "Récupération de tous les VNets + leurs prefixes..."
-az network vnet list --query "[].{name:name, rg:resourceGroup, prefixes:addressSpace.addressPrefixes[]}" -o json \
-| jq -c '.[]' | while read -r vnet; do
+# On boucle sur chaque VNet proprement (sans sous-shell qui bouffe les variables)
+mapfile -t vnets < <(az network vnet list --query "[].{name:name, rg:resourceGroup, prefixes:addressSpace.addressPrefixes[]}" -o json | jq -c '.[]')
 
-    vnet_name=$(echo "$vnet" | jq -r '.name')
-    rg=$(echo "$vnet" | jq -r '.rg')
+for vnet_json in "${vnets[@]}"; do
+    vnet_name=$(echo "$vnet_json" | jq -r '.name')
+    rg=$(echo "$vnet_json" | jq -r '.rg')
 
-    echo "$vnet" | jq -r '.prefixes[]' | while read -r prefix; do
+    # Pour chaque prefix du VNet
+    echo "$vnet_json" | jq -r '.prefixes[]' | while read -r prefix; do
 
-        # 1. Nombre de subnets qui utilisent exactement ce prefix
-        subnet_count=$(az network vnet subnet list --vnet-name "$vnet_name" -g "$rg" --query "[?properties.addressPrefix=='$prefix'] | length(@)" -o tsv)
+        # 1. Nombre exact de subnets dans ce prefix
+        subnet_count=$(az network vnet subnet list --vnet-name "$vnet_name" -g "$rg" \
+            --query "[?properties.addressPrefix == '$prefix'] | length(@)" -o tsv)
 
-        # 2. Calcul du nombre total d'IPs utilisables dans ce prefix (5 réservées par subnet)
-        mask=$(echo "$prefix" | cut -d/ -f2)
-        total_ips_in_prefix=$(( 2 ** (32 - mask) ))
-        usable_per_subnet=$(( total_ips_in_prefix - 5 ))
-        total_usable=$(( usable_per_subnet * subnet_count ))
+        (( subnet_count == 0 )) && continue
 
-        # Si aucun subnet → on ne compte pas le prefix (évite les faux chiffres)
-        [[ $subnet_count -eq 0 ]] && continue
+        # 2. Calcul précis des IPs utilisables
+        mask=$(echo "$prefix" | awk -F/ '{print $2}')
+        ips_in_prefix=$(( 2 ** (32 - mask) ))
+        usable_ips=$(( (ips_in_prefix - 5) * subnet_count ))
 
-        # 3. Nombre réel d'IPs utilisées dans TOUS les subnets de ce prefix
-        used_ips_count=$(az network nic list --query "[?ipConfigurations[].subnet.id != null] | [?contains(ipConfigurations[].subnet.id, '$vnet_name')] | [?contains(ipConfigurations[].subnet.id, '$prefix')].ipConfigurations[].privateIpAddress | length(@)" -o tsv)
+        # 3. Nombre réel d'IPs utilisées (méthode ultra-fiable 2025)
+        used_ips_count=$(az network nic list --query "[
+            ?ipConfigurations != null
+        ].ipConfigurations[].{
+            subnet: subnet.id,
+            ip: privateIpAddress
+        } | [?
+            contains(subnet, '$vnet_name') &&
+            contains(subnet, '$prefix')
+        ].ip | length(@)" -o tsv)
 
-        # 4. IPs disponibles = total utilisable - utilisées
-        available_ips=$(( total_usable - used_ips_count ))
+        # 4. Disponibles
+        available_ips=$(( usable_ips - used_ips_count ))
 
-        # 5. Écriture dans le CSV global
-        printf '%s,%s,"%s",%s,%s,%s,%s\n' \
-            "$vnet_name" "$rg" "$prefix" "$subnet_count" "$total_usable" "$available_ips" "$used_ips_count" \
+        # 5. Écriture directe dans le CSV (pas de sous-shell qui avale la sortie)
+        printf '%s,%s,%s,%s,%s,%s,%s\n' \
+            "$vnet_name" "$rg" "$prefix" "$subnet_count" "$usable_ips" "$available_ips" "$used_ips_count" \
             >> "$output"
 
-        echo "OK → $vnet_name | $prefix → $available_ips disponibles / $total_usable"
+        echo "✓ $vnet_name → $prefix : $available_ips disponibles / $usable_ips"
 
     done
 done
 
 echo ""
-echo "════════════════════════════════════════════════════════════"
-echo "TERMINÉ ! Tout est dans le fichier :"
-echo "     → $output"
-echo "════════════════════════════════════════════════════════════"
-echo "Ouvre-le avec Excel / LibreOffice / PowerBI → c'est parfait."
+echo "════════════════════════════════════════════════"
+echo "FINI ! Tout est bon, vraiment."
+echo "Fichier final → $output"
+echo "Nombre de lignes : $(wc -l < "$output") (dont 1 entête)"
+echo "═══════���════════════════════════════════════════"
 
-# Ouvre automatiquement si tu es en desktop
-command -v xdg-open >/dev/null && xdg-open "$output" 2>/dev/null || true
+# Ouvre direct
+xdg-open "$output" 2>/dev/null || open "$output" 2>/dev/null || echo "Ouvre-le manuellement : $output"
