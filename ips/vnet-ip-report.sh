@@ -1,7 +1,7 @@
 #!/bin/bash
 #═══════════════════════════════════════════════════════════════════════════════
-#  AZURE VNET USAGE REPORT – VERSION OPTIMISÉE
-#  v2.0 - Avec corrections et améliorations
+#  AZURE VNET USAGE REPORT – VERSION FINALE CORRIGÉE
+#  v2.2 - Avec toutes les corrections de syntaxe
 #  Objectif : Calculer l'usage réel incluant les 5 IPs réservées Azure
 #═══════════════════════════════════════════════════════════════════════════════
 
@@ -10,10 +10,12 @@ set -euo pipefail
 # Configuration
 OUTPUT_FILE="Azure_VNet_Usage_v2_$(date +%Y%m%d_%H%M%S).csv"
 JSON_FILE="${OUTPUT_FILE%.csv}.json"
+HTML_FILE="${OUTPUT_FILE%.csv}.html"
 AZURE_RESERVED_COUNT=5
 PARALLEL_JOBS=4
 RETRY_COUNT=3
 EXPORT_JSON="${EXPORT_JSON:-true}"
+EXPORT_HTML="${EXPORT_HTML:-true}"
 DEBUG="${DEBUG:-false}"
 
 # Couleurs pour output
@@ -24,10 +26,21 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # Fonction de logging
-log() { echo -e "${GREEN}[$(date +'%H:%M:%S')]${NC} $1"; }
-warn() { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
-error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
-debug() { [[ "$DEBUG" == "true" ]] && echo -e "${BLUE}[DEBUG]${NC} $1" >&2; }
+log() { 
+    echo -e "${GREEN}[$(date +'%H:%M:%S')]${NC} $1"
+}
+
+warn() { 
+    echo -e "${YELLOW}[WARN]${NC} $1" >&2
+}
+
+error() { 
+    echo -e "${RED}[ERROR]${NC} $1" >&2
+}
+
+debug() { 
+    [[ "$DEBUG" == "true" ]] && echo -e "${BLUE}[DEBUG]${NC} $1" >&2
+}
 
 #───────────────────────────────────────────────────────────────────────────────
 # VÉRIFICATIONS PRÉLIMINAIRES
@@ -35,13 +48,13 @@ debug() { [[ "$DEBUG" == "true" ]] && echo -e "${BLUE}[DEBUG]${NC} $1" >&2; }
 
 # Vérifier les dépendances
 for cmd in az jq; do
-    command -v $cmd >/dev/null 2>&1 || { 
+    if ! command -v $cmd >/dev/null 2>&1; then
         error "$cmd non installé"
         echo "Installation suggérée:"
         [[ "$cmd" == "az" ]] && echo "  curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash"
         [[ "$cmd" == "jq" ]] && echo "  sudo apt-get install jq  # ou brew install jq"
         exit 1
-    }
+    fi
 done
 
 # Vérifier la connexion Azure
@@ -61,38 +74,54 @@ log "🔐 Connecté à: $CURRENT_SUB"
 # Convertir CIDR en nombre total d'IPs
 cidr_to_count() {
     local mask=${1#*/}
-    echo $(( 2 ** (32 - mask) ))
+    local count=$(( 2 ** (32 - mask) ))
+    echo "$count"
 }
 
-# Convertir IP en entier (correction du bug)
+# Convertir IP en entier
 ip_to_int() {
     local ip=$1
     local a b c d
     IFS=. read -r a b c d <<< "$ip"
-    echo $(( (a<<24)+(b<<16)+(c<<8)+d ))
+    local result=$(( (a*16777216) + (b*65536) + (c*256) + d ))
+    echo "$result"
 }
 
-# Vérifie si subnet est dans prefix (Binaire)
+# Vérifie si subnet est dans prefix
 subnet_in_prefix() {
-    local p_ip=${1%/*} p_mask=${1#*/}
-    local s_ip=${2%/*} s_mask=${2#*/}
+    local prefix=$1
+    local subnet=$2
+    local p_ip=${prefix%/*}
+    local p_mask=${prefix#*/}
+    local s_ip=${subnet%/*}
+    local s_mask=${subnet#*/}
 
-    (( s_mask >= p_mask )) || return 1
+    # Le subnet doit avoir un masque >= au prefix
+    if [ "$s_mask" -lt "$p_mask" ]; then
+        return 1
+    fi
 
-    # Conversion IP vers Int
-    local p_int s_int
-    p_int=$(ip_to_int "$p_ip")
-    s_int=$(ip_to_int "$s_ip")
-
-    # Masque réseau
-    local netmask=$(( 0xFFFFFFFF << (32 - p_mask) ))
-
-    (( (p_int & netmask) == (s_int & netmask) ))
+    # Comparaison simple basée sur les préfixes des IPs
+    local p_int=$(ip_to_int "$p_ip")
+    local s_int=$(ip_to_int "$s_ip")
+    
+    # On décale les deux nombres pour ne garder que les bits du réseau
+    local shift=$(( 32 - p_mask ))
+    local p_shifted=$(( p_int >> shift ))
+    local s_shifted=$(( s_int >> shift ))
+    
+    if [ "$p_shifted" -eq "$s_shifted" ]; then
+        return 0
+    else
+        return 1
+    fi
 }
 
 # Récupérer les IPs disponibles avec retry
 get_available_ips() {
-    local rg=$1 vnet=$2 subnet=$3
+    local rg=$1 
+    local vnet=$2 
+    local subnet=$3
     local retries=$RETRY_COUNT
     local result
     
@@ -119,12 +148,15 @@ get_available_ips() {
 #───────────────────────────────────────────────────────────────────────────────
 
 process_vnet() {
-    local vnet_name=$1 rg=$2 vnet_id=$3
+    local vnet_name=$1
+    local rg=$2
+    local vnet_id=$3
+    
     [[ -z "$vnet_name" ]] && return
     
     log "📊 Analyse de : $vnet_name ($rg)"
 
-    # Récupérer les données du VNet (Prefixes + Subnets) en 1 seule requête
+    # Récupérer les données du VNet
     local vnet_json
     vnet_json=$(az network vnet show --ids "$vnet_id" --query "{
         prefixes: addressSpace.addressPrefixes,
@@ -146,14 +178,15 @@ process_vnet() {
     while IFS= read -r prefix; do
         [[ -z "$prefix" ]] && continue
 
-        local total_prefix_ips=$(cidr_to_count "$prefix")
+        local total_prefix_ips
+        total_prefix_ips=$(cidr_to_count "$prefix")
         local subnet_count=0
         local total_used_in_prefix=0
         local reserved_ips_count=0
 
         debug "Traitement du prefix: $prefix (Total IPs: $total_prefix_ips)"
 
-        # Parcourir les subnets pour trouver ceux qui appartiennent à ce prefix
+        # Parcourir les subnets
         while IFS= read -r subnet_line; do
             [[ -z "$subnet_line" ]] && continue
             
@@ -166,43 +199,45 @@ process_vnet() {
                 ((subnet_count++))
                 ((reserved_ips_count += AZURE_RESERVED_COUNT))
                 
-                local subnet_total=$(cidr_to_count "$s_cidr")
+                local subnet_total
+                subnet_total=$(cidr_to_count "$s_cidr")
 
-                # Récupérer les IPs DISPONIBLES via l'API Azure (avec retry)
-                local available_ips=$(get_available_ips "$rg" "$vnet_name" "$s_name")
+                # Récupérer les IPs disponibles
+                local available_ips
+                available_ips=$(get_available_ips "$rg" "$vnet_name" "$s_name")
 
-                # CALCUL CORRIGÉ :
-                # Used = Total - Available
-                # Cela inclut automatiquement les IPs réservées
+                # Calcul des IPs utilisées
                 local used_in_subnet=$((subnet_total - available_ips))
                 
                 # Sécurité pour ne pas avoir de nombres négatifs
-                (( used_in_subnet < 0 )) && used_in_subnet=0
+                if (( used_in_subnet < 0 )); then
+                    used_in_subnet=0
+                fi
 
                 total_used_in_prefix=$((total_used_in_prefix + used_in_subnet))
                 
-                # Debug
                 debug "  └─ Subnet: $s_name | CIDR: $s_cidr | Total: $subnet_total | Available: $available_ips | Used: $used_in_subnet"
             fi
         done < <(echo "$subnets_json" | jq -c '.[]' 2>/dev/null)
 
-        # Calcul final des IPs disponibles dans le Prefix
+        # Calcul final
         local available_in_prefix=$((total_prefix_ips - total_used_in_prefix))
         
-        # Calcul du pourcentage d'utilisation
+        # Calcul du pourcentage
         local usage_percent="0.00"
         if (( total_prefix_ips > 0 )); then
             usage_percent=$(awk "BEGIN {printf \"%.2f\", ($total_used_in_prefix / $total_prefix_ips) * 100}")
         fi
 
-        # Écriture CSV avec métriques enrichies
+        # Écriture CSV
         printf '%s,%s,%s,%s,%s,%s,%s,%s\n' \
             "$vnet_name" "$rg" "$prefix" "$subnet_count" \
             "$total_used_in_prefix" "$available_in_prefix" \
             "$usage_percent" "$reserved_ips_count" >> "$OUTPUT_FILE"
 
         # Alerte si utilisation élevée
-        if (( $(echo "$usage_percent > 80" | bc -l 2>/dev/null || echo 0) )); then
+        local usage_int=${usage_percent%.*}
+        if (( usage_int > 80 )); then
             warn "⚠️  Utilisation élevée (${usage_percent}%) pour $vnet_name/$prefix"
         fi
 
@@ -215,16 +250,12 @@ process_vnet() {
 
 log "🚀 Démarrage de l'analyse des VNets Azure..."
 
-# Créer fichier temporaire pour le traitement parallèle
-TEMP_FILE=$(mktemp)
-trap "rm -f $TEMP_FILE" EXIT
-
-# En-tête CSV enrichi
+# En-tête CSV
 echo "VNet,ResourceGroup,Prefix,SubnetCount,UsedIPs,AvailableIPs,UsagePercent,ReservedIPs" > "$OUTPUT_FILE"
 
 # Récupérer la liste des VNets
 log "🔍 Récupération de la liste des VNets..."
-VNET_COUNT=$(az network vnet list --query "length([])" -o tsv)
+VNET_COUNT=$(az network vnet list --query "length([])" -o tsv 2>/dev/null || echo "0")
 
 if [[ "$VNET_COUNT" -eq 0 ]]; then
     warn "Aucun VNet trouvé dans la souscription"
@@ -233,12 +264,12 @@ fi
 
 log "📝 $VNET_COUNT VNet(s) trouvé(s)"
 
-# Export des fonctions pour le traitement parallèle
+# Export des fonctions
 export -f cidr_to_count ip_to_int subnet_in_prefix get_available_ips process_vnet log warn error debug
-export OUTPUT_FILE AZURE_RESERVED_COUNT RETRY_COUNT DEBUG
+export OUTPUT_FILE AZURE_RESERVED_COUNT RETRY_COUNT DEBUG RED GREEN YELLOW BLUE NC
 
-# Vérifier si GNU parallel est disponible pour le traitement parallèle
-if command -v parallel >/dev/null 2>&1 && [[ "${USE_PARALLEL:-true}" == "true" ]]; then
+# Traitement des VNets
+if command -v parallel >/dev/null 2>&1 && [[ "${USE_PARALLEL:-false}" == "true" ]]; then
     log "⚡ Traitement parallèle activé ($PARALLEL_JOBS jobs)"
     
     az network vnet list --query "[].{name:name, rg:resourceGroup, id:id}" -o tsv | \
@@ -272,7 +303,6 @@ generate_summary() {
         total_available+=$6
         total_reserved+=$8
         
-        # Tracker les VNets avec forte utilisation
         usage=strtonum($7)
         if (usage > 80) high_usage[NR]=$1"/"$3" ("$7"%)"
         if (usage > 90) critical_usage[NR]=$1"/"$3" ("$7"%)"
@@ -297,13 +327,12 @@ generate_summary() {
         printf "└─ Subnets totaux    : %d\n\n", total_subnets
         
         printf "💾 UTILISATION DES IPs\n"
-        printf "├─ IPs totales       : %\047d\n", total_ips
-        printf "├─ IPs utilisées     : %\047d (%.2f%%)\n", total_used, usage_pct
-        printf "│  ├─ Réservées Azure: %\047d\n", total_reserved
-        printf "│  └─ Réellement utilisées: %\047d (%.2f%%)\n", real_used, real_usage_pct
-        printf "└─ IPs disponibles   : %\047d\n\n", total_available
+        printf "├─ IPs totales       : %d\n", total_ips
+        printf "├─ IPs utilisées     : %d (%.2f%%)\n", total_used, usage_pct
+        printf "│  ├─ Réservées Azure: %d\n", total_reserved
+        printf "│  └─ Réellement utilisées: %d (%.2f%%)\n", real_used, real_usage_pct
+        printf "└─ IPs disponibles   : %d\n\n", total_available
         
-        # Alertes
         if (length(critical_usage) > 0) {
             print "🔴 ALERTES CRITIQUES (>90%)"
             for (i in critical_usage) print "   └─ " critical_usage[i]
@@ -318,7 +347,6 @@ generate_summary() {
             print ""
         }
         
-        # Recommandations
         print "💡 RECOMMANDATIONS"
         if (usage_pct > 85) {
             print "   ⚠️  Utilisation globale élevée - Planifier une extension"
@@ -340,7 +368,6 @@ generate_summary() {
 export_to_json() {
     log "📄 Génération du fichier JSON..."
     
-    # Créer le JSON structuré
     {
         echo "{"
         echo "  \"metadata\": {"
@@ -350,7 +377,6 @@ export_to_json() {
         echo "  },"
         echo "  \"vnets\": ["
         
-        # Convertir CSV en JSON
         awk -F, 'NR>1 {
             if (NR>2) printf ",\n"
             printf "    {\n"
@@ -367,19 +393,19 @@ export_to_json() {
         
         echo ""
         echo "  ],"
-        
-        # Ajouter les statistiques globales
         echo "  \"summary\": {"
         
         awk -F, 'NR>1 {
             total_used+=$5
             total_available+=$6
             total_reserved+=$8
+            vnets[$1]=1
         }
         END {
             total_ips = total_used + total_available
             usage_pct = total_ips > 0 ? (total_used / total_ips) * 100 : 0
             
+            printf "    \"totalVNets\": %d,\n", length(vnets)
             printf "    \"totalIPs\": %d,\n", total_ips
             printf "    \"usedIPs\": %d,\n", total_used
             printf "    \"availableIPs\": %d,\n", total_available
@@ -391,7 +417,6 @@ export_to_json() {
         echo "}"
     } > "$JSON_FILE"
     
-    # Valider le JSON
     if jq empty "$JSON_FILE" 2>/dev/null; then
         log "✅ Fichier JSON valide créé: $JSON_FILE"
     else
@@ -400,11 +425,10 @@ export_to_json() {
 }
 
 #───────────────────────────────────────────────────────────────────────────────
-# EXPORT HTML (BONUS)
+# EXPORT HTML (OPTIONNEL)
 #───────────────────────────────────────────────────────────────────────────────
 
 export_to_html() {
-    local HTML_FILE="${OUTPUT_FILE%.csv}.html"
     log "📄 Génération du rapport HTML..."
     
     cat > "$HTML_FILE" <<'HTML_HEADER'
@@ -446,40 +470,6 @@ export_to_html() {
         .content {
             padding: 30px;
         }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 20px;
-        }
-        th {
-            background: #f5f5f5;
-            padding: 12px;
-            text-align: left;
-            font-weight: 600;
-            border-bottom: 2px solid #ddd;
-        }
-        td {
-            padding: 10px 12px;
-            border-bottom: 1px solid #eee;
-        }
-        tr:hover {
-            background: #f9f9f9;
-        }
-        .usage-bar {
-            width: 100px;
-            height: 20px;
-            background: #e0e0e0;
-            border-radius: 10px;
-            overflow: hidden;
-            position: relative;
-        }
-        .usage-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #4CAF50, #8BC34A);
-            transition: width 0.3s ease;
-        }
-        .usage-fill.warning { background: linear-gradient(90deg, #FF9800, #FFB74D); }
-        .usage-fill.danger { background: linear-gradient(90deg, #f44336, #ef5350); }
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -514,6 +504,41 @@ export_to_html() {
             border-radius: 4px;
             width: 300px;
         }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th {
+            background: #f5f5f5;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            border-bottom: 2px solid #ddd;
+        }
+        td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #eee;
+        }
+        tr:hover {
+            background: #f9f9f9;
+        }
+        .usage-bar {
+            width: 100px;
+            height: 20px;
+            background: #e0e0e0;
+            border-radius: 10px;
+            overflow: hidden;
+            position: relative;
+            display: inline-block;
+        }
+        .usage-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4CAF50, #8BC34A);
+            transition: width 0.3s ease;
+        }
+        .usage-fill.warning { background: linear-gradient(90deg, #FF9800, #FFB74D); }
+        .usage-fill.danger { background: linear-gradient(90deg, #f44336, #ef5350); }
     </style>
 </head>
 <body>
@@ -645,7 +670,7 @@ HTML_FOOTER
 # FINALISATION
 #───────────────────────────────────────────────────────────────────────────────
 
-# Générer le résumé
+# Appeler la fonction de résumé
 generate_summary
 
 # Export JSON si demandé
@@ -654,7 +679,7 @@ if [[ "$EXPORT_JSON" == "true" ]]; then
 fi
 
 # Export HTML si demandé
-if [[ "${EXPORT_HTML:-true}" == "true" ]]; then
+if [[ "$EXPORT_HTML" == "true" ]]; then
     export_to_html
 fi
 
@@ -665,15 +690,25 @@ echo ""
 echo "📁 Fichiers générés:"
 echo "   📄 CSV: $OUTPUT_FILE"
 [[ "$EXPORT_JSON" == "true" ]] && echo "   📄 JSON: $JSON_FILE"
-[[ "${EXPORT_HTML:-true}" == "true" ]] && echo "   📄 HTML: ${OUTPUT_FILE%.csv}.html"
+[[ "$EXPORT_HTML" == "true" ]] && echo "   📄 HTML: $HTML_FILE"
 echo ""
 
-# Proposer d'ouvrir le rapport HTML
-if [[ "${EXPORT_HTML:-true}" == "true" ]] && command -v xdg-open >/dev/null 2>&1; then
-    read -p "Voulez-vous ouvrir le rapport HTML ? (o/N) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Oo]$ ]]; then
-        xdg-open "${OUTPUT_FILE%.csv}.html"
+# Proposer d'ouvrir le rapport HTML (Linux/Mac)
+if [[ "$EXPORT_HTML" == "true" ]]; then
+    if command -v xdg-open >/dev/null 2>&1; then
+        # Linux
+        read -p "Voulez-vous ouvrir le rapport HTML ? (o/N) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Oo]$ ]]; then
+            xdg-open "$HTML_FILE"
+        fi
+    elif command -v open >/dev/null 2>&1; then
+        # macOS
+        read -p "Voulez-vous ouvrir le rapport HTML ? (o/N) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Oo]$ ]]; then
+            open "$HTML_FILE"
+        fi
     fi
 fi
 
