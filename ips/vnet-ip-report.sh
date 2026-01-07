@@ -1,60 +1,70 @@
 #!/bin/bash
-# VERSION FINALE QUI MARCHE PARTOUT - 100% TESTÉE AVRIL 2025
-# Testée sur abonnements français, allemands, US, avec 1 à 500 VNets
 
-set -euo pipefail
+# Fichier de sortie
+output="Azure_VNet_Prefix_Report.csv"
+echo "VNetName,ResourceGroup,Prefix,SubnetCount,TotalUsableIPs,AvailableIPs,UsedIPs" > "$output"
 
-output="Azure-IP-Report-FINAL-REALLY-WORKS.csv"
-echo 'VNetName,ResourceGroup,Prefix,SubnetCount,TotalUsableIPs,AvailableIPs,UsedIPs' > "$output"
+echo "Début du scan (récupération des VNets...)"
 
-echo "Scan de tous les subnets de l'abonnement en cours (ça prend 15-45 secondes)..."
+# 1. Récupérer la liste des VNets
+vnets_json=$(az network vnet list --query "[].{name:name, rg:resourceGroup, prefixes:addressSpace.addressPrefixes}" -o json)
 
-# ON PART DES SUBNETS (c'est la seule méthode qui marche à 100% du temps)
-az network vnet subnet list \
-  --query "[].{vnet: split(parent.id, '/')[8], rg: resourceGroup, prefix: properties.addressPrefix}" \
-  -o json 2>/dev/null | jq -r '.[] | "\(.vnet)|\(.rg)|\(.prefix)"' | sort -u | \
+# 2. Boucler sur chaque VNet
+echo "$vnets_json" | jq -c '.[]' | while read -r vnet; do
+    vnet_name=$(echo "$vnet" | jq -r '.name')
+    rg=$(echo "$vnet" | jq -r '.rg')
+    
+    echo "Analyse du VNet: $vnet_name..."
 
-while IFS='|' read -r vnet rg prefix; do
+    # 3. Récupérer TOUS les subnets de CE VNet (Correction de l'erreur précédente)
+    subnets_json=$(az network vnet subnet list -g "$rg" --vnet-name "$vnet_name" -o json)
 
-    # Nombre de subnets utilisant exactement ce prefix
-    subnet_count=$(az network vnet subnet list \
-        -g "$rg" \
-        --vnet-name "$vnet" \
-        --query "[?properties.addressPrefix == '$prefix'] | length(@)" \
-        -o tsv 2>/dev/null || echo 0)
+    # 4. Pour chaque préfixe (Address Space) déclaré dans le VNet
+    echo "$vnet" | jq -r '.prefixes[]' | while read -r prefix; do
+        
+        # On filtre les subnets qui appartiennent à ce préfixe
+        # On utilise une logique simple : le subnet_prefix doit commencer par le début du vnet_prefix (ex: 10.125.4.x)
+        prefix_base=$(echo "$prefix" | cut -d. -f1-2) # On prend les 2 premiers octets pour le groupage
+        
+        matching_subnets=$(echo "$subnets_json" | jq -c ".[] | select(.addressPrefix | startswith(\"$prefix_base\"))")
+        
+        subnet_count=$(echo "$matching_subnets" | jq -s 'length')
 
-    (( subnet_count == 0 )) && continue
+        if [ "$subnet_count" -gt 0 ]; then
+            total_usable=0
+            total_available=0
 
-    # Calcul IPs utilisables (Azure réserve 5 par subnet)
-    mask=${prefix#*/}
-    total=$(( 2 ** (32 - mask) ))
-    usable=$(( (total - 5) * subnet_count ))
+            # Calcul pour chaque subnet trouvé dans ce préfixe
+            while read -r subnet; do
+                [ -z "$subnet" ] && continue
+                
+                sub_name=$(echo "$subnet" | jq -r '.name')
+                sub_cidr=$(echo "$subnet" | jq -r '.addressPrefix')
+                
+                # Nombre d'IPs total dans le CIDR (ex: /24 = 256)
+                mask=$(echo "$sub_cidr" | cut -d/ -f2)
+                total_ips_in_cidr=$(( 2 ** (32 - mask) ))
+                
+                # IPs utilisables chez Azure (Total - 5)
+                usable_in_subnet=$(( total_ips_in_cidr - 5 ))
+                
+                # IPs disponibles (Appel API pour avoir le chiffre exact du portail)
+                avail=$(az network vnet subnet list-available-ips -g "$rg" --vnet-name "$vnet_name" -n "$sub_name" --query "length(@)" -o tsv 2>/dev/null || echo 0)
+                
+                total_usable=$(( total_usable + usable_in_subnet ))
+                total_available=$(( total_available + avail ))
 
-    # IPs réellement utilisées dans ce VNet (toutes les NIC attachées)
-    used=$(az network nic list \
-        -g "$rg" \
-        --query "[?contains(ipConfigurations[].subnet.id, '$vnet')].ipConfigurations[].privateIpAddress | length(@)" \
-        -o tsv 2>/dev/null || echo 0)
+            done <<< "$matching_subnets"
 
-    available=$(( usable - used ))
+            used_ips=$(( total_usable - total_available ))
 
-    # Ligne finale
-    printf '"%s","%s","%s",%s,%s,%s,%s\n' \
-        "$vnet" "$rg" "$prefix" "$subnet_count" "$usable" "$available" "$used" >> "$output"
-
-    echo "✓ $vnet | $prefix → $available libres ($used utilisées dans $subnet_count subnet(s))"
-
+            # Ecriture dans le CSV
+            echo "$vnet_name,$rg,$prefix,$subnet_count,$total_usable,$total_available,$used_ips" >> "$output"
+            echo "   -> Prefix $prefix : $subnet_count subnets trouvés."
+        fi
+    done
 done
 
-echo ""
-echo "════════════════════════════════════════"
-echo "C'EST FINI ET ÇA MARCHE CHEZ TOI AUSSI !"
-echo "Fichier généré : $output"
-echo "Nombre de prefixes analysés : $(( $(wc -l < "$output") - 1 ))"
-echo "════════════════════════════════════════"
-
-# Ouvre direct
-xdg-open "$output" 2>/dev/null || open "$output" 2>/dev/null || echo "Ouvre le fichier : $output"
-
-echo ""
-echo "Tu peux maintenant fermer ce terminal en paix."
+echo "------------------------------------------------"
+echo "TERMINÉ : Le fichier $output a été généré."
+echo "------------------------------------------------"
