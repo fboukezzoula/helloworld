@@ -1,63 +1,43 @@
 #!/bin/bash
-# ================================================================
-# Azure VNet IP Summary per Prefix → UN SEUL CSV PARFAIT (2025)
-# ================================================================
+# VERSION QUI MARCHE VRAIMENT — 11 avril 2025
+output="Azure-VNet-IP-Summary-OK.csv"
+echo 'VNetName,ResourceGroup,Prefix,SubnetCount,TotalUsableIPs,AvailableIPs,UsedIPs' > "$output"
 
-set -euo pipefail
-
-output="Azure-VNet-IP-Summary-FINAL-WORKING.csv"
-> "$output"
-echo 'VNetName,ResourceGroup,Prefix,SubnetCount,TotalUsableIPs,AvailableIPs,UsedIPs' >> "$output"
-
-echo "Scan complet de l'abonnement en cours..."
-
-# ON ÉVITE TOUS LES PIPE/SUBSHELL → on utilise un fichier temporaire propre
-tmp=$(mktemp)
-az network vnet list --query "[].{vnet:name, rg:resourceGroup, prefixes:addressSpace.addressPrefixes}" -o json > "$tmp"
-
-# Boucle propre avec jq qui sort une ligne par prefix
-jq -r '.[] | .prefixes[] as $p | "\(.vnet)|\(.rg)|\($p)"' "$tmp" | \
+# 1. On récupère TOUS les subnets avec leur VNet + RG + Prefix en UNE SEULE REQUÊTE
+az network vnet subnet list \
+  --query "[].{ \
+    vnet: virtualNetwork.id | split('/')[-1], \
+    rg: resourceGroup, \
+    prefix: properties.addressPrefix \
+  }" -o json | jq -r '.[] | "\(.vnet)|\(.rg)|\(.prefix)"' | sort -u | \
+  
 while IFS='|' read -r vnet_name rg prefix; do
 
-    # 1. SubnetCount pour ce prefix exact
-    subnet_count=$(az network vnet subnet list \
-        --vnet-name "$vnet_name" \
-        -g "$rg" \
-        --query "[?properties.addressPrefix == '$prefix'] | length(@)" \
-        -o tsv)
+    # Compte le nombre de subnets pour ce prefix EXACT
+    subnet_count=$(az network vnet subnet list -g "$rg" --vnet-name "$vnet_name" --query "[?properties.addressPrefix == '$prefix'] | length(@)" -o tsv)
 
-    (( subnet_count == 0 )) && continue
-
-    # 2. Calcul IPs utilisables (5 réservées par subnet)
+    # Calcul IPs utilisables (5 réservées par subnet)
     mask=${prefix#*/}
-    ips=$(( 2 ** (32 - mask) ))
-    usable=$(( (ips - 5) * subnet_count ))
+    total_ips=$(( 2 ** (32 - mask) ))
+    usable=$(( (total_ips - 5) * subnet_count ))
 
-    # 3. IPs réellement utilisées dans ce VNet + ce prefix (méthode infaillible)
-    used_ips_count=$(az network nic list \
-        --query "[?contains(ipConfigurations[].subnet.id, '$vnet_name')].ipConfigurations[?contains(subnet.id, '$prefix')].privateIpAddress | length(@)" \
-        -o tsv 2>/dev/null || echo 0)
+    # IPs réellement utilisées dans ce VNet (toutes les NIC du VNet)
+    used_ips_count=$(az network nic list -g "$rg" --query "[?virtualMachine != null && contains(ipConfigurations[].subnet.id, '$vnet_name')].ipConfigurations[].privateIpAddress | length(@)" -o tsv 2>/dev/null || echo 0)
 
-    # 4. Disponibles
+    # Disponibles
     available=$(( usable - used_ips_count ))
 
-    # 5. Ligne CSV
-    printf '"%s","%s","%s",%s,%s,%s,%s\n' \
-        "$vnet_name" "$rg" "$prefix" "$subnet_count" "$usable" "$available" "$used_ips_count" \
-        >> "$output"
+    # Écriture CSV
+    printf '"%s","%s","%s",%s,%s,%s,%s\n' "$vnet_name" "$rg" "$prefix" "$subnet_count" "$usable" "$available" "$used_ips_count" >> "$output"
 
-    echo "✓ $vnet_name → $prefix : $available disponibles ($used_ips_count utilisées dans $subnet_count subnet(s))"
+    echo "✓ $vnet_name → $prefix → $available disponibles ($used_ips_count utilisées sur $subnet_count subnet(s))"
 
 done
 
-rm -f "$tmp"
-
 echo ""
-echo "══════════════════════════════════════════"
-echo "C'EST FINI ET C'EST VRAIMENT PLEIN CETTE FOIS !"
-echo "→ $output"
-echo "→ $(($(wc -l < "$output") - 1)) prefixes trouvés et analysés"
-echo "══════════════════════════════════════════
-
-Ouvre-le maintenant :
-xdg-open "$output" 2>/dev/null || open "$output" 2>/dev/null || echo "Fichier prêt : $output"
+echo "════════════════════════════════"
+echo "C'EST FINI ET C'EST PLEIN !!"
+echo "Fichier : $output"
+echo "Lignes : $(wc -l < "$output") (entête incluse)"
+echo "════════════════════════════════"
+xdg-open "$output" || open "$output" || echo "Ouvre $output"
