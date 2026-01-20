@@ -37,7 +37,8 @@ for ACCOUNT_ID in $ACCOUNTS; do
   for REGION in $REGIONS; do
     VPCS=$(aws ec2 describe-vpcs \
       --region $REGION \
-      --query "Vpcs[].VpcId" \
+      --query "Vpcs[].VpcId" \    # --query "Vpcs[].{VpcId:VpcId,Cidr:CidrBlock,Default:IsDefault}"
+
       --output text 2>/dev/null)
 
     if [ -n "$VPCS" ]; then
