@@ -1,313 +1,179 @@
-👉 Application Gateway avec load balancing basé sur le path URI (ex: /api, /app, /images).
-
-Je prends Azure Application Gateway (Layer 7) comme référence, car c’est exactement son usage.
+👉 Architecture AKS + Application Gateway Ingress Controller (AGIC)
 
 🎯 Objectif
 
-Rediriger le trafic selon l’URI :
+Exposer plusieurs services Kubernetes avec un seul point d’entrée, en fonction du path URI :
 
-URL	Backend
-/api/*	Backend API
-/app/*	Backend Web
-/images/*	Backend Images
-🧱 Architecture
-Client
-  |
-IP publique
-  |
-Azure Application Gateway
-  |
-Routing par path URI
-  ├── /api     → Pool API (VMs / App Service)
-  ├── /app     → Pool Web
-  └── /images  → Pool Images
+URL	Service Kubernetes
+/api	service-api
+/app	service-web
+/admin	service-admin
+🧱 Architecture globale
+Internet
+   |
+IP Publique
+   |
+Azure Application Gateway (L7)
+   |
+AGIC (Ingress Controller)
+   |
+AKS
+ ├─ service-api
+ ├─ service-web
+ └─ service-admin
 
-🛠️ Étapes de création (Azure Portal)
-1️⃣ Créer les backends (Backend Pools)
 
-Chaque pool correspond à un path.
+👉 AGIC traduit automatiquement les Ingress Kubernetes en règles App Gateway
 
-Exemple :
+1️⃣ Prérequis
 
-backend-api
-
-VM1 : 10.0.1.4
-
-VM2 : 10.0.1.5
-
-backend-web
-
-VM3 : 10.0.2.4
-
-backend-images
-
-App Service ou VM
+✔ AKS (Azure Kubernetes Service)
+✔ Application Gateway Standard_v2 ou WAF_v2
+✔ Subnet dédié pour App Gateway
+✔ Droits RBAC (Contributor minimum)
 
 2️⃣ Créer l’Application Gateway
-Paramètres clés :
+
+Paramètres importants :
 
 SKU : Standard_v2 ou WAF_v2
 
-Réseau : subnet dédié
+Frontend : IP publique
 
-IP publique : obligatoire
+Listener : HTTP ou HTTPS
 
-Protocol : HTTP / HTTPS
+Subnet : dédié uniquement à App Gateway
 
-3️⃣ Configurer le Listener
+⚠️ Ne PAS configurer de règles manuellement → AGIC s’en charge.
 
-Le listener écoute les requêtes entrantes.
+3️⃣ Installer AGIC (Application Gateway Ingress Controller)
+Option recommandée : Add-on AKS
+az aks enable-addons \
+  --addons ingress-appgw \
+  --name myAKS \
+  --resource-group myRG \
+  --appgw-id /subscriptions/.../applicationGateways/myAppGw
 
-Exemple :
 
-Protocol : HTTP
+👉 Azure :
 
-Port : 80
+installe AGIC dans AKS
 
-Listener name : listener-http
+donne les permissions à App Gateway
 
-(HTTPS possible avec certificat SSL)
+synchronise automatiquement
 
-4️⃣ Créer les HTTP Settings
+4️⃣ Déployer les services Kubernetes
+Exemple API
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-api
+spec:
+  selector:
+    app: api
+  ports:
+  - port: 80
+    targetPort: 8080
 
-Ils définissent comment l’App Gateway parle aux backends.
 
-Exemple http-setting-api :
+Même principe pour service-web, service-admin.
 
-Port : 80
+5️⃣ Créer l’Ingress avec Path-based Routing
+Ingress Kubernetes
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: app-ingress
+  annotations:
+    kubernetes.io/ingress.class: azure/application-gateway
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: service-api
+            port:
+              number: 80
 
-Protocol : HTTP
+      - path: /app
+        pathType: Prefix
+        backend:
+          service:
+            name: service-web
+            port:
+              number: 80
 
-Path override : ❌
+      - path: /admin
+        pathType: Prefix
+        backend:
+          service:
+            name: service-admin
+            port:
+              number: 80
 
-Cookie-based affinity : ❌
+6️⃣ Ce que fait AGIC automatiquement
 
-Health probe : recommandé
+✔ Crée les backend pools
+✔ Crée les HTTP settings
+✔ Configure les listeners
+✔ Met en place les path rules
+✔ Gère le load balancing
 
-Créer 1 HTTP setting par backend si nécessaire.
-
-5️⃣ Créer une règle de routage basée sur le path
-Type de règle :
-
-👉 Path-based routing
-
-Exemple de Path Map
-Path	Backend Pool	HTTP Setting
-/api/*	backend-api	http-setting-api
-/app/*	backend-web	http-setting-web
-/images/*	backend-images	http-setting-images
-/* (default)	backend-web	http-setting-web
-
-📌 Le /* est obligatoire comme fallback.
-
-6️⃣ Créer la règle
-
-Listener : listener-http
-
-Path Map : celle définie ci-dessus
-
-Priority : 100 (exemple)
+📌 Aucune configuration manuelle dans App Gateway
 
 7️⃣ Health Probes (important)
 
-Créer une probe par backend :
+AGIC génère des probes automatiques, mais tu peux les personnaliser :
 
-Backend	Path probe
-API	/api/health
-Web	/health
-Images	/images/health
+metadata:
+  annotations:
+    appgw.ingress.kubernetes.io/health-probe-path: "/health"
 
-➡️ Sans probe OK = backend retiré du load balancing
+8️⃣ HTTPS (optionnel mais recommandé)
+Certificat TLS
+spec:
+  tls:
+  - hosts:
+    - myapp.mondomaine.com
+    secretName: tls-secret
 
-🔍 Exemple de flux réel
 
-Requête :
+AGIC :
 
-http://myapp.com/api/users
+configure HTTPS
+
+associe le certificat
+
+termine le SSL au niveau App Gateway
+
+9️⃣ WAF (sécurité)
+
+Si App Gateway est en WAF_v2 :
+
+protection OWASP activée
+
+règles personnalisables
+
+compatible avec Ingress sans config supplémentaire
+
+🔍 Vérification
+kubectl get ingress
+kubectl describe ingress app-ingress
 
 
-➡️ Application Gateway :
+Tester :
 
-Match /api/*
-
-Envoie vers backend-api
-
-Load balance (round-robin)
-
-🧪 Vérification
-curl http://myapp.com/api
-curl http://myapp.com/app
-curl http://myapp.com/images
+curl http://<IP_APPGW>/api
+curl http://<IP_APPGW>/app
 
 ⚠️ Bonnes pratiques
 
-✔ Toujours prévoir /*
-✔ Ne pas mélanger TCP (SSH, DB) → L7 HTTP uniquement
-✔ Utiliser HTTPS + WAF si public
-✔ Probes spécifiques par path
-
-🧩 Exemple équivalent en Terraform (simplifié)
-path_rule {
-  name                       = "api-path"
-  paths                      = ["/api/*"]
-  backend_address_pool_name  = "backend-api"
-  backend_http_settings_name = "http-setting-api"
-}
-
-Tu veux la suite ?👉 Application Gateway avec load balancing basé sur le path URI (ex: /api, /app, /images).
-
-Je prends Azure Application Gateway (Layer 7) comme référence, car c’est exactement son usage.
-
-🎯 Objectif
-
-Rediriger le trafic selon l’URI :
-
-URL	Backend
-/api/*	Backend API
-/app/*	Backend Web
-/images/*	Backend Images
-🧱 Architecture
-Client
-  |
-IP publique
-  |
-Azure Application Gateway
-  |
-Routing par path URI
-  ├── /api     → Pool API (VMs / App Service)
-  ├── /app     → Pool Web
-  └── /images  → Pool Images
-
-🛠️ Étapes de création (Azure Portal)
-1️⃣ Créer les backends (Backend Pools)
-
-Chaque pool correspond à un path.
-
-Exemple :
-
-backend-api
-
-VM1 : 10.0.1.4
-
-VM2 : 10.0.1.5
-
-backend-web
-
-VM3 : 10.0.2.4
-
-backend-images
-
-App Service ou VM
-
-2️⃣ Créer l’Application Gateway
-Paramètres clés :
-
-SKU : Standard_v2 ou WAF_v2
-
-Réseau : subnet dédié
-
-IP publique : obligatoire
-
-Protocol : HTTP / HTTPS
-
-3️⃣ Configurer le Listener
-
-Le listener écoute les requêtes entrantes.
-
-Exemple :
-
-Protocol : HTTP
-
-Port : 80
-
-Listener name : listener-http
-
-(HTTPS possible avec certificat SSL)
-
-4️⃣ Créer les HTTP Settings
-
-Ils définissent comment l’App Gateway parle aux backends.
-
-Exemple http-setting-api :
-
-Port : 80
-
-Protocol : HTTP
-
-Path override : ❌
-
-Cookie-based affinity : ❌
-
-Health probe : recommandé
-
-Créer 1 HTTP setting par backend si nécessaire.
-
-5️⃣ Créer une règle de routage basée sur le path
-Type de règle :
-
-👉 Path-based routing
-
-Exemple de Path Map
-Path	Backend Pool	HTTP Setting
-/api/*	backend-api	http-setting-api
-/app/*	backend-web	http-setting-web
-/images/*	backend-images	http-setting-images
-/* (default)	backend-web	http-setting-web
-
-📌 Le /* est obligatoire comme fallback.
-
-6️⃣ Créer la règle
-
-Listener : listener-http
-
-Path Map : celle définie ci-dessus
-
-Priority : 100 (exemple)
-
-7️⃣ Health Probes (important)
-
-Créer une probe par backend :
-
-Backend	Path probe
-API	/api/health
-Web	/health
-Images	/images/health
-
-➡️ Sans probe OK = backend retiré du load balancing
-
-🔍 Exemple de flux réel
-
-Requête :
-
-http://myapp.com/api/users
-
-
-➡️ Application Gateway :
-
-Match /api/*
-
-Envoie vers backend-api
-
-Load balance (round-robin)
-
-🧪 Vérification
-curl http://myapp.com/api
-curl http://myapp.com/app
-curl http://myapp.com/images
-
-⚠️ Bonnes pratiques
-
-✔ Toujours prévoir /*
-✔ Ne pas mélanger TCP (SSH, DB) → L7 HTTP uniquement
-✔ Utiliser HTTPS + WAF si public
-✔ Probes spécifiques par path
-
-🧩 Exemple équivalent en Terraform (simplifié)
-path_rule {
-  name                       = "api-path"
-  paths                      = ["/api/*"]
-  backend_address_pool_name  = "backend-api"
-  backend_http_settings_name = "http-setting-api"
-}
-
-Tu veux la suite ?
+✔ 1 App Gateway = plusieurs Ingress OK
+✔ Toujours utiliser pathType: Prefix
+✔ Probes explicites pour les API
+✔ HTTPS + WAF pour Internet
+✔ Ne pas modifier App Gateway à la ma
