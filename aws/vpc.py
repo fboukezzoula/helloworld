@@ -5,6 +5,15 @@
   Default:IsDefault
 }"
 
+Name: (Tags[?Key=='Name'] | [0].Value) || 'N/A'
+aws ec2 describe-vpcs \
+  --region eu-west-1 \
+  --query "Vpcs[].{VpcId:VpcId,Name:Tags[?Key=='Name'] | [0].Value,Cidr:CidrBlock,Default:IsDefault}" \
+  --output table
+
+echo "AccountId,Region,VpcId,Name,Cidr,Default" > vpcs.csv
+echo "$ACCOUNT_ID,$REGION,$VPC_ID,$NAME,$CIDR,$DEFAULT" >> vpcs.csv
+
 
 
 echo "AccountId,Region,VpcId,Name,Cidr,Default" > vpcs.csv
