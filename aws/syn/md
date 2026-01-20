@@ -1,0 +1,50 @@
+```python
+import boto3
+
+ROLE_NAME = "AuditReadOnlyRole"
+
+org = boto3.client('organizations')
+sts = boto3.client('sts')
+
+accounts = []
+paginator = org.get_paginator('list_accounts')
+
+for page in paginator.paginate():
+    accounts.extend(page['Accounts'])
+
+def assume_role(account_id):
+    response = sts.assume_role(
+        RoleArn=f"arn:aws:iam::{account_id}:role/{ROLE_NAME}",
+        RoleSessionName="ListVPCsSession"
+    )
+    creds = response['Credentials']
+    return boto3.Session(
+        aws_access_key_id=creds['AccessKeyId'],
+        aws_secret_access_key=creds['SecretAccessKey'],
+        aws_session_token=creds['SessionToken']
+    )
+
+for account in accounts:
+    account_id = account['Id']
+    account_name = account['Name']
+
+    print(f"\n==============================")
+    print(f"Compte: {account_name} ({account_id})")
+
+    try:
+        session = assume_role(account_id)
+        ec2_global = session.client('ec2')
+        regions = [r['RegionName'] for r in ec2_global.describe_regions()['Regions']]
+
+        for region in regions:
+            ec2 = session.client('ec2', region_name=region)
+            vpcs = ec2.describe_vpcs()['Vpcs']
+
+            if vpcs:
+                print(f"\n Région {region}:")
+                for vpc in vpcs:
+                    print(f"  - {vpc['VpcId']} | {vpc['CidrBlock']} | Default={vpc['IsDefault']}")
+
+    except Exception as e:
+        print(f"❌ Erreur sur le compte {account_id}: {e}")
+```
