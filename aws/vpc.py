@@ -1,3 +1,19 @@
+--query "Vpcs[].{
+  VpcId:VpcId,
+  Name:Tags[?Key=='Name'] | [0].Value,
+  Cidr:CidrBlock,
+  Default:IsDefault
+}"
+
+
+
+echo "AccountId,Region,VpcId,Name,Cidr,Default" > vpcs.csv
+
+
+echo "$ACCOUNT_ID,$REGION,$VPC_ID,$NAME,$CIDR,$DEFAULT" >> vpcs.csv
+
+
+
 #!/bin/bash
 
 ROLE_NAME="AuditReadOnlyRole"
