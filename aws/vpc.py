@@ -1,5 +1,5 @@
 #!/bin/bash
-
+echo "Account,Region,VpcId,Cidr,Default"
 ROLE_NAME="AuditReadOnlyRole"
 
 # Liste tous les comptes de l'organisation
